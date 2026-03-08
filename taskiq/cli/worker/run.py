@@ -6,7 +6,7 @@ import signal
 import sys
 import time
 from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
-from multiprocessing import Connection, get_start_method, set_start_method
+from multiprocessing import get_start_method, set_start_method
 from sys import platform
 from typing import Any
 
@@ -71,7 +71,7 @@ def get_receiver_type(args: WorkerArgs) -> type[Receiver]:
     return receiver_type
 
 
-def start_listen(args: WorkerArgs, health_pipe: Connection | None = None) -> None:
+def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
     """
     This function starts actual listening process.
 

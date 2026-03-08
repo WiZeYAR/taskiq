@@ -8,14 +8,12 @@ Detects worker crashes, stuck processes, and broker disconnections.
 import asyncio
 import logging
 import time
-from multiprocessing import Connection
+from multiprocessing import Queue
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from taskiq.cli.worker.process_manager import (
-        ProcessActionBase,
-        ReloadOneAction,
-    )
+    from multiprocessing.connection import Connection
+    from taskiq.cli.worker.process_manager import ProcessActionBase
 
 logger = logging.getLogger("taskiq.health-checker")
 
@@ -38,7 +36,7 @@ class HealthChecker:
     def __init__(
         self,
         num_workers: int,
-        action_queue: "Queue[ProcessActionBase]",
+        action_queue: Queue[object],
         heartbeat_interval: float = 5.0,
         heartbeat_timeout: float = 15.0,
     ) -> None:
@@ -47,12 +45,12 @@ class HealthChecker:
         self.heartbeat_interval = heartbeat_interval
         self.heartbeat_timeout = heartbeat_timeout
 
-        self.health_readers: list[Connection] = []
-        self.health_writers: list[Connection] = []
+        self.health_readers: list["Connection"] = []
+        self.health_writers: list["Connection"] = []
         self.last_heartbeat: dict[str, float] = {}
         self.worker_health: dict[str, dict] = {}  # Detailed health data
 
-    def create_pipes(self) -> list[Connection]:
+    def create_pipes(self) -> list["Connection"]:
         """
         Create pipe pairs for each worker.
 
@@ -87,7 +85,8 @@ class HealthChecker:
         Reads heartbeats from pipes, updates health status,
         and triggers restarts for stuck workers.
         """
-        from taskiq.cli.worker.process_manager import ReloadOneAction
+        # Import at runtime to avoid circular import
+        from taskiq.cli.worker.process_manager import ReloadOneAction  # noqa: PLC0415
 
         while True:
             await asyncio.sleep(1)  # Check every second

@@ -1,7 +1,9 @@
+import asyncio
 import logging
 import os
 import signal
 import sys
+import threading
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -20,6 +22,7 @@ except ImportError:
     FileWatcher = None  # type: ignore
 
 from taskiq.cli.worker.args import WorkerArgs
+from taskiq.cli.worker.health_checker import HealthChecker
 
 logger = logging.getLogger("taskiq.process-manager")
 
@@ -190,14 +193,25 @@ class ProcessManager:
 
         self.workers: list[Process] = []
 
+        self.health_checker = HealthChecker(
+            num_workers=args.workers,
+            action_queue=self.action_queue,
+        )
+
     def prepare_workers(self) -> None:
         """Spawn multiple processes."""
         events: list[EventType] = []
+
+        health_pipes = self.health_checker.create_pipes()
+
         for process in range(self.args.workers):
             event = Event()
             work_proc = Process(
                 target=self.worker_function,
-                kwargs={"args": self.args},
+                kwargs={
+                    "args": self.args,
+                    "health_pipe": health_pipes[process],
+                },
                 name=f"worker-{process}",
                 daemon=False,
             )
@@ -261,6 +275,18 @@ class ProcessManager:
         """
         restarts = 0
         self.prepare_workers()
+
+        # Start health monitoring in background thread
+        def run_health_monitor() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self.health_checker.monitor())
+
+        health_thread = threading.Thread(
+            target=run_health_monitor, daemon=True, name="health-monitor"
+        )
+        health_thread.start()
+
         while True:
             sleep(1)
             reloaded_workers = set()
@@ -291,6 +317,7 @@ class ProcessManager:
                 elif isinstance(action, ShutdownAction):
                     logger.debug("Process manager closed, killing workers.")
                     self._shutdown_workers()
+                    self.health_checker.cleanup()
                     return None
 
             for worker_num, worker in enumerate(self.workers):

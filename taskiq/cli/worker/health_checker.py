@@ -8,12 +8,8 @@ Detects worker crashes, stuck processes, and broker disconnections.
 import asyncio
 import logging
 import time
-from multiprocessing import Queue
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from multiprocessing.connection import Connection
-    from taskiq.cli.worker.process_manager import ProcessActionBase
+from multiprocessing import Pipe, Queue
+from typing import Any
 
 logger = logging.getLogger("taskiq.health-checker")
 
@@ -45,12 +41,12 @@ class HealthChecker:
         self.heartbeat_interval = heartbeat_interval
         self.heartbeat_timeout = heartbeat_timeout
 
-        self.health_readers: list["Connection"] = []
-        self.health_writers: list["Connection"] = []
+        self.health_readers: list[Any] = []
+        self.health_writers: list[Any] = []
         self.last_heartbeat: dict[str, float] = {}
         self.worker_health: dict[str, dict] = {}  # Detailed health data
 
-    def create_pipes(self) -> list["Connection"]:
+    def create_pipes(self) -> list[Any]:
         """
         Create pipe pairs for each worker.
 

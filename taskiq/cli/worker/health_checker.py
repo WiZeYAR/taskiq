@@ -32,7 +32,7 @@ class HealthChecker:
     def __init__(
         self,
         num_workers: int,
-        action_queue: Queue[object],
+        action_queue: Any,
         heartbeat_interval: float = 5.0,
         heartbeat_timeout: float = 15.0,
     ) -> None:

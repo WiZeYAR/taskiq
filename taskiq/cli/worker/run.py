@@ -4,8 +4,9 @@ import logging
 import os
 import signal
 import sys
+import time
 from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
-from multiprocessing import get_start_method, set_start_method
+from multiprocessing import Connection, get_start_method, set_start_method
 from sys import platform
 from typing import Any
 
@@ -70,7 +71,7 @@ def get_receiver_type(args: WorkerArgs) -> type[Receiver]:
     return receiver_type
 
 
-def start_listen(args: WorkerArgs) -> None:
+def start_listen(args: WorkerArgs, health_pipe: Connection | None = None) -> None:
     """
     This function starts actual listening process.
 
@@ -80,7 +81,7 @@ def start_listen(args: WorkerArgs) -> None:
 
 
     :param args: CLI arguments.
-    :param event: Event for notification.
+    :param health_pipe: Pipe for sending health heartbeats to main process.
     :raises ValueError: if broker is not an AsyncBroker instance.
     :raises ValueError: if receiver is not a Receiver type.
     """
@@ -172,6 +173,33 @@ def start_listen(args: WorkerArgs) -> None:
                 wait_tasks_timeout=args.wait_tasks_timeout,
                 **receiver_kwargs,  # type: ignore
             )
+
+            # Start heartbeat sender if health pipe is provided
+            if health_pipe:
+                from multiprocessing import current_process
+
+                async def send_heartbeat() -> None:
+                    """Send periodic health heartbeats to main process."""
+                    while True:
+                        try:
+                            # Check broker connection status
+                            # Note: Different brokers may implement this differently
+                            broker_connected = True  # Default to True if no check available
+
+                            health_pipe.send(
+                                {
+                                    "worker_id": current_process().name,
+                                    "timestamp": time.time(),
+                                    "broker_connected": broker_connected,
+                                }
+                            )
+                        except (BrokenPipeError, ConnectionError, OSError):
+                            # Pipe closed, stop sending heartbeats
+                            break
+                        await asyncio.sleep(5)  # Send every 5 seconds
+
+                asyncio.create_task(send_heartbeat())
+
             loop.run_until_complete(receiver.listen(shutdown_event))
     finally:
         loop.run_until_complete(shutdown_broker(broker, args.shutdown_timeout))

@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 from multiprocessing import Pipe, Queue
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger("taskiq.health-checker")
 
@@ -27,6 +27,8 @@ class HealthChecker:
     :param action_queue: Queue for sending reload actions to ProcessManager.
     :param heartbeat_interval: Seconds between heartbeats from workers.
     :param heartbeat_timeout: Seconds before worker considered stuck (3x interval).
+    :param startup_timeout: Seconds to wait for first heartbeat before stuck.
+    :param check_interval: Seconds between health checks (for testing).
     """
 
     def __init__(
@@ -35,16 +37,21 @@ class HealthChecker:
         action_queue: Any,
         heartbeat_interval: float = 5.0,
         heartbeat_timeout: float = 15.0,
+        startup_timeout: float = 0.0,
+        check_interval: float = 0.1,
     ) -> None:
         self.num_workers = num_workers
         self.action_queue = action_queue
         self.heartbeat_interval = heartbeat_interval
         self.heartbeat_timeout = heartbeat_timeout
+        self.startup_timeout = startup_timeout
+        self.check_interval = check_interval
 
         self.health_readers: list[Any] = []
         self.health_writers: list[Any] = []
-        self.last_heartbeat: dict[str, float] = {}
-        self.worker_health: dict[str, dict] = {}  # Detailed health data
+        self.last_heartbeat: dict[str, Optional[float]] = {}
+        self.worker_health: dict[str, dict] = {}
+        self.reloads_pending: set[str] = set()
 
     def create_pipes(self) -> list[Any]:
         """
@@ -57,19 +64,20 @@ class HealthChecker:
         """
         writers = []
         for i in range(self.num_workers):
-            reader, writer = __import__("multiprocessing").Pipe(duplex=False)
+            reader, writer = Pipe(duplex=False)
             self.health_readers.append(reader)
             self.health_writers.append(writer)
             writers.append(writer)
 
             # Initialize tracking for this worker
             worker_name = f"worker-{i}"
-            self.last_heartbeat[worker_name] = time.time()
+            self.last_heartbeat[worker_name] = None
             self.worker_health[worker_name] = {
                 "worker_id": worker_name,
                 "status": "unknown",
                 "broker_connected": False,
-                "last_heartbeat": time.time(),
+                "last_heartbeat": None,
+                "initialized_at": time.time(),
             }
 
         return writers
@@ -91,6 +99,7 @@ class HealthChecker:
                         data = reader.recv()
                         worker_name = data["worker_id"]
                         self.last_heartbeat[worker_name] = data["timestamp"]
+                        self.reloads_pending.discard(worker_name)
                         self.worker_health[worker_name].update(
                             {
                                 "status": "alive",
@@ -108,20 +117,37 @@ class HealthChecker:
             now = time.time()
             for i in range(self.num_workers):
                 worker_name = f"worker-{i}"
-                last_seen = self.last_heartbeat.get(worker_name, 0)
+                last_seen = self.last_heartbeat.get(worker_name)
 
-                if now - last_seen > self.heartbeat_timeout:
-                    logger.warning(
-                        f"{worker_name} is stuck (no heartbeat for {now - last_seen:.1f}s)"
+                if last_seen is not None:
+                    if now - last_seen > self.heartbeat_timeout:
+                        logger.warning(
+                            f"{worker_name} is stuck (no heartbeat for {now - last_seen:.1f}s)"
+                        )
+                        self.worker_health[worker_name]["status"] = "stuck"
+
+                        if worker_name not in self.reloads_pending:
+                            self.reloads_pending.add(worker_name)
+                            self.action_queue.put(
+                                ReloadOneAction(worker_num=i, is_reload_all=False)
+                            )
+                elif self.startup_timeout > 0:
+                    initialized_at = self.worker_health[worker_name].get(
+                        "initialized_at", now
                     )
-                    self.worker_health[worker_name]["status"] = "stuck"
+                    if now - initialized_at > self.startup_timeout:
+                        logger.warning(
+                            f"{worker_name} failed to send initial heartbeat"
+                        )
+                        self.worker_health[worker_name]["status"] = "stuck"
 
-                    # Trigger restart
-                    self.action_queue.put(
-                        ReloadOneAction(worker_num=i, is_reload_all=False)
-                    )
+                        if worker_name not in self.reloads_pending:
+                            self.reloads_pending.add(worker_name)
+                            self.action_queue.put(
+                                ReloadOneAction(worker_num=i, is_reload_all=False)
+                            )
 
-            await asyncio.sleep(1)  # Check every second
+            await asyncio.sleep(self.check_interval)
 
     def get_health_status(self) -> dict:
         """
@@ -144,7 +170,7 @@ class HealthChecker:
         )
 
         return {
-            "status": "healthy" if stuck_count == 0 else "degraded",
+            "status": "healthy" if stuck_count == 0 and broker_connected else "degraded",
             "workers": {
                 "total": self.num_workers,
                 "alive": alive_count,

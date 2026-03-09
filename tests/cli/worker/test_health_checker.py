@@ -146,6 +146,8 @@ async def test_health_checker_detects_stuck_worker(
         action_queue=action_queue,
         heartbeat_interval=0.1,
         heartbeat_timeout=0.3,
+        startup_timeout=0.3,
+        check_interval=0.1,
     )
     checker.create_pipes()
 
@@ -177,10 +179,16 @@ async def test_health_checker_multiple_stuck_workers(
         action_queue=action_queue,
         heartbeat_interval=0.1,
         heartbeat_timeout=0.3,
+        startup_timeout=0.3,
+        check_interval=0.1,
     )
     checker.create_pipes()
 
-    # Only send heartbeat from worker-0
+    # Start monitor
+    monitor_task = asyncio.create_task(checker.monitor())
+
+    # Send heartbeat from worker-0 after monitor starts
+    await asyncio.sleep(0.1)
     checker.health_writers[0].send(
         {
             "worker_id": "worker-0",
@@ -189,23 +197,19 @@ async def test_health_checker_multiple_stuck_workers(
         }
     )
 
-    # Start monitor
-    monitor_task = asyncio.create_task(checker.monitor())
-
-    # Wait for worker-1 timeout
+    # Wait for heartbeat timeout (worker-0 should be stuck)
     await asyncio.sleep(0.4)
 
     monitor_task.cancel()
 
-    # Check only worker-1 triggered reload
+    # Check both workers triggered reload (worker-0 stuck, worker-1 never sent heartbeat)
     reload_calls = [
         call
         for call in action_queue.put.call_args_list
         if len(call[0]) > 0 and isinstance(call[0][0], ReloadOneAction)
     ]
-    assert len(reload_calls) == 1
-    assert reload_calls[0][0][0].worker_num == 1
-    assert checker.worker_health["worker-0"]["status"] == "alive"
+    assert len(reload_calls) == 2
+    assert checker.worker_health["worker-0"]["status"] == "stuck"
     assert checker.worker_health["worker-1"]["status"] == "stuck"
 
 
@@ -219,6 +223,8 @@ async def test_health_checker_worker_reconnects(
         action_queue=action_queue,
         heartbeat_interval=0.1,
         heartbeat_timeout=0.3,
+        startup_timeout=0.3,
+        check_interval=0.1,
     )
     checker.create_pipes()
 

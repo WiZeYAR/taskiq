@@ -1,6 +1,6 @@
 [project]
 name = "taskiq"
-version = "0.0.0"
+version = "0.12.1"
 description = "Distributed task queue with full async support"
 authors = [{ name = "Pavel Kirilin", email = "<win10@list.ru>" }]
 maintainers = [{ name = "Pavel Kirilin", email = "<win10@list.ru>" }]

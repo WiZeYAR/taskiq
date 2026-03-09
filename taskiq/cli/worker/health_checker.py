@@ -85,9 +85,6 @@ class HealthChecker:
         from taskiq.cli.worker.process_manager import ReloadOneAction  # noqa: PLC0415
 
         while True:
-            await asyncio.sleep(1)  # Check every second
-
-            # Read heartbeats (non-blocking)
             for i, reader in enumerate(self.health_readers):
                 while reader.poll():  # Read all pending messages
                     try:
@@ -123,6 +120,8 @@ class HealthChecker:
                     self.action_queue.put(
                         ReloadOneAction(worker_num=i, is_reload_all=False)
                     )
+
+            await asyncio.sleep(1)  # Check every second
 
     def get_health_status(self) -> dict:
         """

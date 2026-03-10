@@ -126,8 +126,12 @@ omit = [
 ]
 
 [build-system]
-requires = ["setuptools>=61.0", "wheel", "setuptools-scm>=8.0"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.9.16,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "taskiq"
+module-root = ""
 
 [tool.ruff]
 target-version="py310"

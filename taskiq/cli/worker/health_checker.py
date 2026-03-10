@@ -64,6 +64,7 @@ class HealthChecker:
         :returns: List of pipe writers to pass to worker subprocesses.
         """
         writers = []
+        logger.info("Creating %d pipe pairs for worker health monitoring", self.num_workers)
         for i in range(self.num_workers):
             reader, writer = Pipe(duplex=False)
             self.health_readers.append(reader)
@@ -80,7 +81,9 @@ class HealthChecker:
                 "last_heartbeat": None,
                 "initialized_at": time.time(),
             }
+            logger.debug("Created pipe pair for %s", worker_name)
 
+        logger.info("Created %d health pipe pairs", len(writers))
         return writers
 
     async def monitor(self) -> None:
@@ -92,6 +95,8 @@ class HealthChecker:
         """
         # Import at runtime to avoid circular import
         from taskiq.cli.worker.process_manager import ReloadOneAction  # noqa: PLC0415
+
+        logger.info("Health monitor started for %d workers", self.num_workers)
 
         while True:
             for _i, reader in enumerate(self.health_readers):
@@ -110,6 +115,12 @@ class HealthChecker:
                                 ),
                                 "last_heartbeat": data["timestamp"],
                             },
+                        )
+                        logger.info(
+                            "Received heartbeat from %s at %s (broker_connected: %s)",
+                            worker_name,
+                            data["timestamp"],
+                            data.get("broker_connected", False),
                         )
                     except (EOFError, OSError):
                         # Worker died, keep last known state

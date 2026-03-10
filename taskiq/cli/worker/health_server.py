@@ -79,6 +79,8 @@ class HealthHTTPServer:
         logger.info(
             f"Health check server listening on http://{self.host}:{self.port}/health",
         )
+        async with self.server:
+            await self.server.serve_forever()
 
     async def stop(self) -> None:
         """Stop the HTTP server."""

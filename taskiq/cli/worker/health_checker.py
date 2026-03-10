@@ -51,7 +51,7 @@ class HealthChecker:
         self.health_readers: list[Any] = []
         self.health_writers: list[Any] = []
         self.last_heartbeat: dict[str, float | None] = {}
-        self.worker_health: dict[str, dict] = {}
+        self.worker_health: dict[str, dict[str, Any]] = {}
         self.reloads_pending: set[str] = set()
 
     def create_pipes(self) -> list[Any]:
@@ -154,7 +154,7 @@ class HealthChecker:
 
             await asyncio.sleep(self.check_interval)
 
-    def get_health_status(self) -> dict:
+    def get_health_status(self) -> dict[str, Any]:
         """
         Get current health status for HTTP server.
 

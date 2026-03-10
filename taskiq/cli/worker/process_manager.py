@@ -193,6 +193,8 @@ class ProcessManager:
             )
 
         self.workers: list[Process] = []
+        self.health_checker: HealthChecker | None = None
+        self.health_server: HealthHTTPServer | None = None
 
         # Only initialize health checker if health_port is specified
         if args.health_port is not None:
@@ -293,13 +295,13 @@ class ProcessManager:
 
         # Start health monitoring and HTTP server in background
         # thread if health check is enabled
-        if self.health_checker:
+        if (checker:=self.health_checker) and (server := self.health_server):
 
             async def run_health_tasks() -> None:
                 """Run health checker and HTTP server concurrently."""
                 await asyncio.gather(
-                    self.health_checker.monitor(),
-                    self.health_server.start(),
+                    checker.monitor(),
+                    server.start(),
                 )
 
             def run_health_loop() -> None:

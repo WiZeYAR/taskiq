@@ -69,7 +69,7 @@ class TaskiqInstrumentor(BaseInstrumentor):
 
     _instrumented_brokers: _WeakSet[AsyncBroker] = _WeakSet()
     _original_start_listen: Callable[
-        [WorkerArgs],
+        [WorkerArgs, Any | None],
         None,
     ] = taskiq.cli.worker.run.start_listen
 
@@ -118,9 +118,13 @@ class TaskiqInstrumentor(BaseInstrumentor):
         return ("taskiq >= 0.0.0",)
 
     @classmethod
-    def _start_listen_with_initialize(cls, args: WorkerArgs) -> None:
+    def _start_listen_with_initialize(
+        cls,
+        args: WorkerArgs,
+        health_pipe: Any | None = None,
+    ) -> None:
         initialize()
-        cls._original_start_listen(args)
+        cls._original_start_listen(args, health_pipe)
 
     def _instrument(self, **kwargs: Any) -> None:
         def broker_init(

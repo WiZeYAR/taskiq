@@ -232,11 +232,26 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
                             )
                         await asyncio.sleep(5)  # Send every 5 seconds
 
-                asyncio.create_task(send_heartbeat())  # noqa: RUF006
+                # Create heartbeat task
+                heartbeat_task = asyncio.create_task(send_heartbeat())  # noqa: RUF006
+
+                # Run both tasks concurrently
+                async def run_with_heartbeat() -> None:
+                    """Run receiver and heartbeat task concurrently."""
+                    # Run both tasks - this ensures heartbeat task gets CPU time
+                    receiver_task = asyncio.create_task(receiver.listen(shutdown_event))
+                    done, pending = await asyncio.wait(
+                        [heartbeat_task, receiver_task],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    # Cancel pending tasks
+                    for task in pending:
+                        task.cancel()
+
+                loop.run_until_complete(run_with_heartbeat())
             else:
                 logger.info("No health pipe provided for %s", current_process().name)
-
-            loop.run_until_complete(receiver.listen(shutdown_event))
+                loop.run_until_complete(receiver.listen(shutdown_event))
     finally:
         loop.run_until_complete(shutdown_broker(broker, args.shutdown_timeout))
 

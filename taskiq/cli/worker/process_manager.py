@@ -198,6 +198,11 @@ class ProcessManager:
 
         # Only initialize health checker if health_port is specified
         if args.health_port is not None:
+            logger.info(
+                "Health check enabled on %s:%s, initializing HealthChecker",
+                args.health_host,
+                args.health_port,
+            )
             self.health_checker = HealthChecker(
                 num_workers=args.workers,
                 action_queue=self.action_queue,
@@ -208,6 +213,7 @@ class ProcessManager:
                 port=args.health_port,
             )
         else:
+            logger.info("Health check disabled (no health_port specified)")
             self.health_checker = None
             self.health_server = None
 
@@ -221,8 +227,20 @@ class ProcessManager:
             else [None] * self.args.workers
         )
 
+        if self.health_checker:
+            logger.info(
+                "Created %d health pipe pairs for workers",
+                len(health_pipes),
+            )
+
         for process in range(self.args.workers):
             event = Event()
+            has_health_pipe = health_pipes[process] is not None
+            logger.info(
+                "Spawning worker-%d (health_pipe: %s)",
+                process,
+                "yes" if has_health_pipe else "no",
+            )
             work_proc = Process(
                 target=self.worker_function,
                 kwargs={
@@ -234,9 +252,10 @@ class ProcessManager:
             )
             work_proc.start()
             logger.info(
-                "Started process worker-%d with pid %s ",
+                "Started process worker-%d with pid %s (health_pipe: %s)",
                 process,
                 work_proc.pid,
+                "yes" if has_health_pipe else "no",
             )
             self.workers.append(work_proc)
             events.append(event)

@@ -176,15 +176,27 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
 
             # Start heartbeat sender if health pipe is provided
             if health_pipe:
+                logger.info(
+                    "Health pipe provided for %s, starting heartbeat sender",
+                    current_process().name,
+                )
 
                 async def send_heartbeat() -> None:
                     """Send periodic health heartbeats to main process."""
+                    logger.info("Heartbeat sender started for %s", current_process().name)
+                    heartbeat_count = 0
                     while True:
                         try:
                             # Check broker connection status
                             # Note: Different brokers may implement this differently
                             broker_connected = (
                                 True  # Default to True if no check available
+                            )
+
+                            logger.debug(
+                                "Preparing to send heartbeat #%d from %s",
+                                heartbeat_count + 1,
+                                current_process().name,
                             )
 
                             health_pipe.send(
@@ -194,12 +206,35 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
                                     "broker_connected": broker_connected,
                                 },
                             )
-                        except (BrokenPipeError, ConnectionError, OSError):
+
+                            heartbeat_count += 1
+                            logger.info(
+                                "Sent heartbeat #%d from %s at %s",
+                                heartbeat_count,
+                                current_process().name,
+                                time.time(),
+                            )
+                        except (BrokenPipeError, ConnectionError, OSError) as e:
                             # Pipe closed, stop sending heartbeats
+                            logger.error(
+                                "Health pipe error for %s (stopping heartbeats): %s",
+                                current_process().name,
+                                e,
+                            )
                             break
+                        except Exception as e:
+                            # Unexpected error - log but continue
+                            logger.error(
+                                "Unexpected heartbeat error for %s: %s",
+                                current_process().name,
+                                e,
+                                exc_info=True,
+                            )
                         await asyncio.sleep(5)  # Send every 5 seconds
 
                 asyncio.create_task(send_heartbeat())  # noqa: RUF006
+            else:
+                logger.info("No health pipe provided for %s", current_process().name)
 
             loop.run_until_complete(receiver.listen(shutdown_event))
     finally:

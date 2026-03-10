@@ -6,7 +6,7 @@ import signal
 import sys
 import time
 from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
-from multiprocessing import get_start_method, set_start_method
+from multiprocessing import current_process, get_start_method, set_start_method
 from sys import platform
 from typing import Any
 
@@ -176,7 +176,6 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
 
             # Start heartbeat sender if health pipe is provided
             if health_pipe:
-                from multiprocessing import current_process
 
                 async def send_heartbeat() -> None:
                     """Send periodic health heartbeats to main process."""
@@ -184,21 +183,23 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
                         try:
                             # Check broker connection status
                             # Note: Different brokers may implement this differently
-                            broker_connected = True  # Default to True if no check available
+                            broker_connected = (
+                                True  # Default to True if no check available
+                            )
 
                             health_pipe.send(
                                 {
                                     "worker_id": current_process().name,
                                     "timestamp": time.time(),
                                     "broker_connected": broker_connected,
-                                }
+                                },
                             )
                         except (BrokenPipeError, ConnectionError, OSError):
                             # Pipe closed, stop sending heartbeats
                             break
                         await asyncio.sleep(5)  # Send every 5 seconds
 
-                asyncio.create_task(send_heartbeat())
+                asyncio.create_task(send_heartbeat())  # noqa: RUF006
 
             loop.run_until_complete(receiver.listen(shutdown_event))
     finally:

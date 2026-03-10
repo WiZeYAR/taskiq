@@ -23,6 +23,7 @@ except ImportError:
 
 from taskiq.cli.worker.args import WorkerArgs
 from taskiq.cli.worker.health_checker import HealthChecker
+from taskiq.cli.worker.health_server import HealthHTTPServer
 
 logger = logging.getLogger("taskiq.process-manager")
 
@@ -193,16 +194,30 @@ class ProcessManager:
 
         self.workers: list[Process] = []
 
-        self.health_checker = HealthChecker(
-            num_workers=args.workers,
-            action_queue=self.action_queue,
-        )
+        # Only initialize health checker if health_port is specified
+        if args.health_port is not None:
+            self.health_checker = HealthChecker(
+                num_workers=args.workers,
+                action_queue=self.action_queue,
+            )
+            self.health_server = HealthHTTPServer(
+                health_checker=self.health_checker,
+                host=args.health_host,
+                port=args.health_port,
+            )
+        else:
+            self.health_checker = None
+            self.health_server = None
 
     def prepare_workers(self) -> None:
         """Spawn multiple processes."""
         events: list[EventType] = []
 
-        health_pipes = self.health_checker.create_pipes()
+        health_pipes = (
+            self.health_checker.create_pipes()
+            if self.health_checker
+            else [None] * self.args.workers
+        )
 
         for process in range(self.args.workers):
             event = Event()
@@ -276,16 +291,30 @@ class ProcessManager:
         restarts = 0
         self.prepare_workers()
 
-        # Start health monitoring in background thread
-        def run_health_monitor() -> None:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self.health_checker.monitor())
+        # Start health monitoring and HTTP server in background
+        # thread if health check is enabled
+        if self.health_checker:
 
-        health_thread = threading.Thread(
-            target=run_health_monitor, daemon=True, name="health-monitor"
-        )
-        health_thread.start()
+            async def run_health_tasks() -> None:
+                """Run health checker and HTTP server concurrently."""
+                await asyncio.gather(
+                    self.health_checker.monitor(),
+                    self.health_server.start(),
+                )
+
+            def run_health_loop() -> None:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(run_health_tasks())
+
+            health_thread = threading.Thread(
+                target=run_health_loop,
+                daemon=True,
+                name="health-monitor",
+            )
+            health_thread.start()
+        else:
+            health_thread = None
 
         while True:
             sleep(1)
@@ -317,7 +346,10 @@ class ProcessManager:
                 elif isinstance(action, ShutdownAction):
                     logger.debug("Process manager closed, killing workers.")
                     self._shutdown_workers()
-                    self.health_checker.cleanup()
+                    if self.health_checker:
+                        self.health_checker.cleanup()
+                    if self.health_server:
+                        asyncio.run(self.health_server.stop())
                     return None
 
             for worker_num, worker in enumerate(self.workers):

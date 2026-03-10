@@ -6,8 +6,7 @@ Tests worker health monitoring via heartbeat IPC.
 
 import asyncio
 import time
-from collections.abc import Generator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -88,7 +87,7 @@ async def test_health_checker_monitor_receives_heartbeat(
             "worker_id": "worker-0",
             "timestamp": time.time(),
             "broker_connected": True,
-        }
+        },
     )
 
     # Run monitor for one iteration
@@ -114,14 +113,14 @@ async def test_health_checker_monitor_multiple_heartbeats(
             "worker_id": "worker-0",
             "timestamp": time.time(),
             "broker_connected": True,
-        }
+        },
     )
     health_checker.health_writers[1].send(
         {
             "worker_id": "worker-1",
             "timestamp": time.time(),
             "broker_connected": False,
-        }
+        },
     )
 
     # Run monitor
@@ -194,7 +193,7 @@ async def test_health_checker_multiple_stuck_workers(
             "worker_id": "worker-0",
             "timestamp": time.time(),
             "broker_connected": True,
-        }
+        },
     )
 
     # Wait for heartbeat timeout (worker-0 should be stuck)
@@ -202,7 +201,8 @@ async def test_health_checker_multiple_stuck_workers(
 
     monitor_task.cancel()
 
-    # Check both workers triggered reload (worker-0 stuck, worker-1 never sent heartbeat)
+    # Check both workers triggered reload
+    # (worker-0 stuck, worker-1 never sent heartbeat)
     reload_calls = [
         call
         for call in action_queue.put.call_args_list
@@ -240,7 +240,7 @@ async def test_health_checker_worker_reconnects(
             "worker_id": "worker-0",
             "timestamp": time.time(),
             "broker_connected": True,
-        }
+        },
     )
 
     # Let monitor process heartbeat
@@ -340,7 +340,7 @@ def test_health_checker_get_health_status_mixed_connection(
 
 def test_health_checker_cleanup(health_checker: HealthChecker) -> None:
     """Test cleanup closes all pipes."""
-    writers = health_checker.create_pipes()
+    health_checker.create_pipes()
 
     # Mock close methods to verify called
     for reader in health_checker.health_readers:
@@ -398,7 +398,7 @@ async def test_health_checker_empty_heartbeat_data(
             "worker_id": "worker-0",
             "timestamp": time.time(),
             # Missing broker_connected field
-        }
+        },
     )
 
     # Run monitor - should not crash
@@ -408,4 +408,8 @@ async def test_health_checker_empty_heartbeat_data(
 
     # Check worker status updated (with default False for missing field)
     assert health_checker.worker_health["worker-0"]["status"] == "alive"
-    assert health_checker.worker_health["worker-0"].get("broker_connected", False) is False
+    broker_connected = health_checker.worker_health["worker-0"].get(
+        "broker_connected",
+        False,
+    )
+    assert broker_connected is False

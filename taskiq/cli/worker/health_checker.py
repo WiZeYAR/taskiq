@@ -8,8 +8,9 @@ Detects worker crashes, stuck processes, and broker disconnections.
 import asyncio
 import logging
 import time
-from multiprocessing import Pipe, Queue
-from typing import Any, Optional
+from contextlib import suppress
+from multiprocessing import Pipe
+from typing import Any
 
 logger = logging.getLogger("taskiq.health-checker")
 
@@ -49,7 +50,7 @@ class HealthChecker:
 
         self.health_readers: list[Any] = []
         self.health_writers: list[Any] = []
-        self.last_heartbeat: dict[str, Optional[float]] = {}
+        self.last_heartbeat: dict[str, float | None] = {}
         self.worker_health: dict[str, dict] = {}
         self.reloads_pending: set[str] = set()
 
@@ -93,7 +94,7 @@ class HealthChecker:
         from taskiq.cli.worker.process_manager import ReloadOneAction  # noqa: PLC0415
 
         while True:
-            for i, reader in enumerate(self.health_readers):
+            for _i, reader in enumerate(self.health_readers):
                 while reader.poll():  # Read all pending messages
                     try:
                         data = reader.recv()
@@ -104,10 +105,11 @@ class HealthChecker:
                             {
                                 "status": "alive",
                                 "broker_connected": data.get(
-                                    "broker_connected", False
+                                    "broker_connected",
+                                    False,
                                 ),
                                 "last_heartbeat": data["timestamp"],
-                            }
+                            },
                         )
                     except (EOFError, OSError):
                         # Worker died, keep last known state
@@ -121,30 +123,33 @@ class HealthChecker:
 
                 if last_seen is not None:
                     if now - last_seen > self.heartbeat_timeout:
-                        logger.warning(
-                            f"{worker_name} is stuck (no heartbeat for {now - last_seen:.1f}s)"
+                        msg = (
+                            f"{worker_name} is stuck "
+                            f"(no heartbeat for {now - last_seen:.1f}s)"
                         )
+                        logger.warning(msg)
                         self.worker_health[worker_name]["status"] = "stuck"
 
                         if worker_name not in self.reloads_pending:
                             self.reloads_pending.add(worker_name)
                             self.action_queue.put(
-                                ReloadOneAction(worker_num=i, is_reload_all=False)
+                                ReloadOneAction(worker_num=i, is_reload_all=False),
                             )
                 elif self.startup_timeout > 0:
                     initialized_at = self.worker_health[worker_name].get(
-                        "initialized_at", now
+                        "initialized_at",
+                        now,
                     )
                     if now - initialized_at > self.startup_timeout:
                         logger.warning(
-                            f"{worker_name} failed to send initial heartbeat"
+                            f"{worker_name} failed to send initial heartbeat",
                         )
                         self.worker_health[worker_name]["status"] = "stuck"
 
                         if worker_name not in self.reloads_pending:
                             self.reloads_pending.add(worker_name)
                             self.action_queue.put(
-                                ReloadOneAction(worker_num=i, is_reload_all=False)
+                                ReloadOneAction(worker_num=i, is_reload_all=False),
                             )
 
             await asyncio.sleep(self.check_interval)
@@ -155,22 +160,20 @@ class HealthChecker:
 
         :returns: Health summary with worker counts and details.
         """
-        now = time.time()
-
         alive_count = sum(
-            1 for health in self.worker_health.values()
-            if health["status"] == "alive"
+            1 for health in self.worker_health.values() if health["status"] == "alive"
         )
         stuck_count = sum(
-            1 for health in self.worker_health.values()
-            if health["status"] == "stuck"
+            1 for health in self.worker_health.values() if health["status"] == "stuck"
         )
         broker_connected = all(
             health["broker_connected"] for health in self.worker_health.values()
         )
 
         return {
-            "status": "healthy" if stuck_count == 0 and broker_connected else "degraded",
+            "status": (
+                "healthy" if stuck_count == 0 and broker_connected else "degraded"
+            ),
             "workers": {
                 "total": self.num_workers,
                 "alive": alive_count,
@@ -183,12 +186,8 @@ class HealthChecker:
     def cleanup(self) -> None:
         """Close all pipe connections."""
         for reader in self.health_readers:
-            try:
+            with suppress(OSError):
                 reader.close()
-            except OSError:
-                pass
         for writer in self.health_writers:
-            try:
+            with suppress(OSError):
                 writer.close()
-            except OSError:
-                pass

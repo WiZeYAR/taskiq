@@ -54,6 +54,8 @@ class WorkerArgs:
     wait_tasks_timeout: float | None = None
     hardkill_count: int = 3
     use_process_pool: bool = False
+    health_port: int | None = None
+    health_host: str = "0.0.0.0"  # noqa: PIE794,S104
 
     @classmethod
     def from_cli(
@@ -268,6 +270,20 @@ class WorkerArgs:
             dest="max_process_pool_processes",
             default=None,
             help="Maximum number of processes in process pool.",
+        )
+        parser.add_argument(
+            "--health-port",
+            type=int,
+            dest="health_port",
+            default=None,
+            help="Enable HTTP health check server on this port (disabled by default).",
+        )
+        parser.add_argument(
+            "--health-host",
+            type=str,
+            dest="health_host",
+            default="0.0.0.0",  # noqa: PIE794,S104
+            help="Host for HTTP health check server (default: 0.0.0.0).",
         )
 
         namespace = parser.parse_args(

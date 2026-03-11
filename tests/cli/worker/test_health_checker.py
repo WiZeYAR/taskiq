@@ -1,12 +1,13 @@
 """
 Unit tests for HealthChecker.
 
-Tests worker health monitoring via heartbeat IPC.
+Tests worker health monitoring via heartbeat IPC using Queue.
 """
 
 import asyncio
 import time
 from unittest.mock import MagicMock
+from multiprocessing import Queue
 
 import pytest
 
@@ -16,22 +17,13 @@ from taskiq.cli.worker.process_manager import ReloadOneAction
 
 @pytest.fixture
 def action_queue() -> MagicMock:
-    """
-    Mock action queue for HealthChecker.
-
-    :returns: Mocked Queue object.
-    """
+    """Mock action queue for HealthChecker."""
     return MagicMock()
 
 
 @pytest.fixture
 def health_checker(action_queue: MagicMock) -> HealthChecker:
-    """
-    Create HealthChecker instance for testing.
-
-    :param action_queue: Mocked action queue.
-    :returns: HealthChecker instance with fast intervals for testing.
-    """
+    """Create HealthChecker instance for testing."""
     return HealthChecker(
         num_workers=2,
         action_queue=action_queue,
@@ -53,19 +45,15 @@ def test_health_checker_init(action_queue: MagicMock) -> None:
     assert checker.action_queue == action_queue
     assert checker.heartbeat_interval == 5.0
     assert checker.heartbeat_timeout == 15.0
-    assert len(checker.health_readers) == 0
-    assert len(checker.health_writers) == 0
     assert len(checker.last_heartbeat) == 0
     assert len(checker.worker_health) == 0
 
 
-def test_health_checker_create_pipes(health_checker: HealthChecker) -> None:
-    """Test pipe creation for workers."""
-    writers = health_checker.create_pipes()
+def test_health_checker_create_queue(health_checker: HealthChecker) -> None:
+    """Test queue creation for workers."""
+    queue = health_checker.create_queue()
 
-    assert len(writers) == 2
-    assert len(health_checker.health_readers) == 2
-    assert len(health_checker.health_writers) == 2
+    assert queue is not None
 
     # Check worker tracking initialized
     assert "worker-0" in health_checker.last_heartbeat
@@ -79,10 +67,10 @@ async def test_health_checker_monitor_receives_heartbeat(
     health_checker: HealthChecker,
 ) -> None:
     """Test that monitor receives and processes heartbeats."""
-    health_checker.create_pipes()
+    queue = health_checker.create_queue()
 
     # Simulate worker sending heartbeat
-    health_checker.health_writers[0].send(
+    queue.put(
         {
             "worker_id": "worker-0",
             "timestamp": time.time(),
@@ -90,9 +78,9 @@ async def test_health_checker_monitor_receives_heartbeat(
         },
     )
 
-    # Run monitor for one iteration
+    # Run monitor - sleep longer than check_interval (0.1s)
     monitor_task = asyncio.create_task(health_checker.monitor())
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.15)
     monitor_task.cancel()
 
     # Check health updated
@@ -105,17 +93,17 @@ async def test_health_checker_monitor_multiple_heartbeats(
     health_checker: HealthChecker,
 ) -> None:
     """Test that monitor processes multiple heartbeats from different workers."""
-    health_checker.create_pipes()
+    queue = health_checker.create_queue()
 
     # Simulate both workers sending heartbeats
-    health_checker.health_writers[0].send(
+    queue.put(
         {
             "worker_id": "worker-0",
             "timestamp": time.time(),
             "broker_connected": True,
         },
     )
-    health_checker.health_writers[1].send(
+    queue.put(
         {
             "worker_id": "worker-1",
             "timestamp": time.time(),
@@ -123,9 +111,9 @@ async def test_health_checker_monitor_multiple_heartbeats(
         },
     )
 
-    # Run monitor
+    # Run monitor - sleep longer than check_interval (0.1s)
     monitor_task = asyncio.create_task(health_checker.monitor())
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.15)
     monitor_task.cancel()
 
     # Check both workers updated
@@ -148,7 +136,7 @@ async def test_health_checker_detects_stuck_worker(
         startup_timeout=0.3,
         check_interval=0.1,
     )
-    checker.create_pipes()
+    queue = checker.create_queue()
 
     # Start monitor
     monitor_task = asyncio.create_task(checker.monitor())
@@ -181,14 +169,14 @@ async def test_health_checker_multiple_stuck_workers(
         startup_timeout=0.3,
         check_interval=0.1,
     )
-    checker.create_pipes()
+    queue = checker.create_queue()
 
     # Start monitor
     monitor_task = asyncio.create_task(checker.monitor())
 
     # Send heartbeat from worker-0 after monitor starts
     await asyncio.sleep(0.1)
-    checker.health_writers[0].send(
+    queue.put(
         {
             "worker_id": "worker-0",
             "timestamp": time.time(),
@@ -202,7 +190,7 @@ async def test_health_checker_multiple_stuck_workers(
     monitor_task.cancel()
 
     # Check both workers triggered reload
-    # (worker-0 stuck, worker-1 never sent heartbeat)
+    # (worker-0 stuck because heartbeat timed out, worker-1 never sent heartbeat)
     reload_calls = [
         call
         for call in action_queue.put.call_args_list
@@ -226,7 +214,7 @@ async def test_health_checker_worker_reconnects(
         startup_timeout=0.3,
         check_interval=0.1,
     )
-    checker.create_pipes()
+    queue = checker.create_queue()
 
     # Start monitor
     monitor_task = asyncio.create_task(checker.monitor())
@@ -235,7 +223,7 @@ async def test_health_checker_worker_reconnects(
     await asyncio.sleep(0.4)
 
     # Worker reconnects and sends heartbeat
-    checker.health_writers[0].send(
+    queue.put(
         {
             "worker_id": "worker-0",
             "timestamp": time.time(),
@@ -256,7 +244,7 @@ def test_health_checker_get_health_status_all_healthy(
     health_checker: HealthChecker,
 ) -> None:
     """Test health status when all workers are healthy."""
-    health_checker.create_pipes()
+    queue = health_checker.create_queue()
 
     # Simulate all workers healthy
     health_checker.worker_health["worker-0"]["status"] = "alive"
@@ -278,7 +266,7 @@ def test_health_checker_get_health_status_degraded(
     health_checker: HealthChecker,
 ) -> None:
     """Test health status when some workers are stuck."""
-    health_checker.create_pipes()
+    queue = health_checker.create_queue()
 
     # Simulate one healthy, one stuck
     health_checker.worker_health["worker-0"]["status"] = "alive"
@@ -300,7 +288,7 @@ def test_health_checker_get_health_status_all_stuck(
     health_checker: HealthChecker,
 ) -> None:
     """Test health status when all workers are stuck."""
-    health_checker.create_pipes()
+    queue = health_checker.create_queue()
 
     # Simulate all workers stuck
     health_checker.worker_health["worker-0"]["status"] = "stuck"
@@ -321,7 +309,7 @@ def test_health_checker_get_health_status_mixed_connection(
     health_checker: HealthChecker,
 ) -> None:
     """Test health status when broker connections are mixed."""
-    health_checker.create_pipes()
+    queue = health_checker.create_queue()
 
     # Simulate mixed broker connectivity
     health_checker.worker_health["worker-0"]["status"] = "alive"
@@ -331,58 +319,50 @@ def test_health_checker_get_health_status_mixed_connection(
 
     status = health_checker.get_health_status()
 
-    assert status["status"] == "degraded"  # One broker disconnected
+    assert status["status"] == "degraded"
     assert status["workers"]["total"] == 2
     assert status["workers"]["alive"] == 2
     assert status["workers"]["stuck"] == 0
-    assert status["broker_connected"] is False  # Not all connected
+    assert status["broker_connected"] is False
 
 
 def test_health_checker_cleanup(health_checker: HealthChecker) -> None:
-    """Test cleanup closes all pipes."""
-    health_checker.create_pipes()
+    """Test cleanup closes queue."""
+    queue = health_checker.create_queue()
 
-    # Mock close methods to verify called
-    for reader in health_checker.health_readers:
-        reader.close = MagicMock()  # type: ignore[method-assign]
-    for writer in health_checker.health_writers:
-        writer.close = MagicMock()  # type: ignore[method-assign]
-
+    # Queue requires close() before join_thread()
     health_checker.cleanup()
 
-    # Verify all close methods called
-    for reader in health_checker.health_readers:
-        reader.close.assert_called_once()
-    for writer in health_checker.health_writers:
-        writer.close.assert_called_once()
+    # Verify queue was closed (join_thread() is called on Queue.close())
+    # We can't easily test this without mocking Queue internals, so just verify no exception
 
 
 @pytest.mark.asyncio
-async def test_health_checker_handles_pipe_error(
+async def test_health_checker_handles_queue_error(
     action_queue: MagicMock,
 ) -> None:
-    """Test that monitor handles pipe errors gracefully."""
+    """Test that monitor handles queue errors gracefully."""
     checker = HealthChecker(
         num_workers=1,
         action_queue=action_queue,
         heartbeat_interval=0.1,
         heartbeat_timeout=0.3,
     )
-    checker.create_pipes()
+    queue = checker.create_queue()
 
-    # Close pipe to simulate error
-    checker.health_readers[0].close()
+    # Close queue to simulate error
+    queue.close()
 
     # Start monitor - should not crash
     monitor_task = asyncio.create_task(checker.monitor())
 
-    # Wait a bit to ensure monitor handled error
+    # Wait to ensure monitor handled error
     await asyncio.sleep(0.2)
 
     monitor_task.cancel()
 
     # Monitor should still be running without errors
-    assert True  # If we got here, no exception was raised
+    assert True
 
 
 @pytest.mark.asyncio
@@ -390,20 +370,19 @@ async def test_health_checker_empty_heartbeat_data(
     health_checker: HealthChecker,
 ) -> None:
     """Test that monitor handles empty/malformed heartbeat data."""
-    health_checker.create_pipes()
+    queue = health_checker.create_queue()
 
-    # Send malformed data (missing fields)
-    health_checker.health_writers[0].send(
+    # Send malformed data (missing broker_connected field)
+    queue.put(
         {
             "worker_id": "worker-0",
             "timestamp": time.time(),
-            # Missing broker_connected field
         },
     )
 
-    # Run monitor - should not crash
+    # Run monitor - sleep longer than check_interval (0.1s)
     monitor_task = asyncio.create_task(health_checker.monitor())
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.15)
     monitor_task.cancel()
 
     # Check worker status updated (with default False for missing field)

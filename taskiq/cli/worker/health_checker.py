@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 from contextlib import suppress
-from multiprocessing import Pipe
+from multiprocessing import Queue
 from typing import Any
 
 logger = logging.getLogger("taskiq.health-checker")
@@ -48,30 +48,24 @@ class HealthChecker:
         self.startup_timeout = startup_timeout
         self.check_interval = check_interval
 
-        self.health_readers: list[Any] = []
-        self.health_writers: list[Any] = []
+        self.health_queue: Any = None
         self.last_heartbeat: dict[str, float | None] = {}
         self.worker_health: dict[str, dict[str, Any]] = {}
         self.reloads_pending: set[str] = set()
 
-    def create_pipes(self) -> list[Any]:
+    def create_queue(self) -> Any:
         """
-        Create pipe pairs for each worker.
+        Create shared queue for all workers to send heartbeats.
 
-        Each worker gets a pipe writer to send heartbeats.
-        HealthChecker keeps readers to receive heartbeats.
+        All workers send heartbeats to the same queue.
+        HealthChecker reads from the queue to monitor all workers.
 
-        :returns: List of pipe writers to pass to worker subprocesses.
+        :returns: Queue for workers to send heartbeats.
         """
-        writers = []
-        logger.info("Creating %d pipe pairs for worker health monitoring", self.num_workers)
+        logger.info("Creating shared health queue for %d workers", self.num_workers)
+        self.health_queue = Queue()
+
         for i in range(self.num_workers):
-            reader, writer = Pipe(duplex=False)
-            self.health_readers.append(reader)
-            self.health_writers.append(writer)
-            writers.append(writer)
-
-            # Initialize tracking for this worker
             worker_name = f"worker-{i}"
             self.last_heartbeat[worker_name] = None
             self.worker_health[worker_name] = {
@@ -81,16 +75,16 @@ class HealthChecker:
                 "last_heartbeat": None,
                 "initialized_at": time.time(),
             }
-            logger.debug("Created pipe pair for %s", worker_name)
+            logger.debug("Initialized health tracking for %s", worker_name)
 
-        logger.info("Created %d health pipe pairs", len(writers))
-        return writers
+        logger.info("Created shared health queue")
+        return self.health_queue
 
     async def monitor(self) -> None:
         """
         Background task that monitors worker heartbeats.
 
-        Reads heartbeats from pipes, updates health status,
+        Reads heartbeats from queue, updates health status,
         and triggers restarts for stuck workers.
         """
         # Import at runtime to avoid circular import
@@ -99,32 +93,30 @@ class HealthChecker:
         logger.info("Health monitor started for %d workers", self.num_workers)
 
         while True:
-            for _i, reader in enumerate(self.health_readers):
-                while reader.poll():  # Read all pending messages
-                    try:
-                        data = reader.recv()
-                        worker_name = data["worker_id"]
-                        self.last_heartbeat[worker_name] = data["timestamp"]
-                        self.reloads_pending.discard(worker_name)
-                        self.worker_health[worker_name].update(
-                            {
-                                "status": "alive",
-                                "broker_connected": data.get(
-                                    "broker_connected",
-                                    False,
-                                ),
-                                "last_heartbeat": data["timestamp"],
-                            },
-                        )
-                        logger.info(
-                            "Received heartbeat from %s at %s (broker_connected: %s)",
-                            worker_name,
-                            data["timestamp"],
-                            data.get("broker_connected", False),
-                        )
-                    except (EOFError, OSError):
-                        # Worker died, keep last known state
-                        pass
+            while not self.health_queue.empty():
+                try:
+                    data = self.health_queue.get_nowait()
+                    worker_name = data["worker_id"]
+                    self.last_heartbeat[worker_name] = data["timestamp"]
+                    self.reloads_pending.discard(worker_name)
+                    self.worker_health[worker_name].update(
+                        {
+                            "status": "alive",
+                            "broker_connected": data.get(
+                                "broker_connected",
+                                False,
+                            ),
+                            "last_heartbeat": data["timestamp"],
+                        },
+                    )
+                    logger.info(
+                        "Received heartbeat from %s at %s (broker_connected: %s)",
+                        worker_name,
+                        data["timestamp"],
+                        data.get("broker_connected", False),
+                    )
+                except Exception:
+                    pass
 
             # Check for stuck workers
             now = time.time()
@@ -195,10 +187,7 @@ class HealthChecker:
         }
 
     def cleanup(self) -> None:
-        """Close all pipe connections."""
-        for reader in self.health_readers:
-            with suppress(OSError):
-                reader.close()
-        for writer in self.health_writers:
-            with suppress(OSError):
-                writer.close()
+        """Close health queue."""
+        if self.health_queue:
+            self.health_queue.close()
+            self.health_queue.join_thread()

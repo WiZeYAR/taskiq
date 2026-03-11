@@ -174,10 +174,10 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
                 **receiver_kwargs,  # type: ignore
             )
 
-            # Start heartbeat sender if health pipe is provided
+            # Start heartbeat sender if health queue is provided
             if health_pipe:
                 logger.info(
-                    "Health pipe provided for %s, starting heartbeat sender",
+                    "Health queue provided for %s, starting heartbeat sender",
                     current_process().name,
                 )
 
@@ -199,7 +199,8 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
                                 current_process().name,
                             )
 
-                            health_pipe.send(
+                            # Queue.put() is synchronous, no await needed
+                            health_pipe.put(
                                 {
                                     "worker_id": current_process().name,
                                     "timestamp": time.time(),
@@ -214,10 +215,10 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
                                 current_process().name,
                                 time.time(),
                             )
-                        except (BrokenPipeError, ConnectionError, OSError) as e:
-                            # Pipe closed, stop sending heartbeats
+                        except (ConnectionError, OSError) as e:
+                            # Queue closed, stop sending heartbeats
                             logger.error(
-                                "Health pipe error for %s (stopping heartbeats): %s",
+                                "Health queue error for %s (stopping heartbeats): %s",
                                 current_process().name,
                                 e,
                             )
@@ -232,13 +233,10 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
                             )
                         await asyncio.sleep(5)  # Send every 5 seconds
 
-                # Create heartbeat task
-                heartbeat_task = asyncio.create_task(send_heartbeat())  # noqa: RUF006
-
                 # Run both tasks concurrently
                 async def run_with_heartbeat() -> None:
                     """Run receiver and heartbeat task concurrently."""
-                    # Run both tasks - this ensures heartbeat task gets CPU time
+                    heartbeat_task = asyncio.create_task(send_heartbeat())
                     receiver_task = asyncio.create_task(receiver.listen(shutdown_event))
                     done, pending = await asyncio.wait(
                         [heartbeat_task, receiver_task],
@@ -250,7 +248,7 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
 
                 loop.run_until_complete(run_with_heartbeat())
             else:
-                logger.info("No health pipe provided for %s", current_process().name)
+                logger.info("No health queue provided for %s", current_process().name)
                 loop.run_until_complete(receiver.listen(shutdown_event))
     finally:
         loop.run_until_complete(shutdown_broker(broker, args.shutdown_timeout))

@@ -221,41 +221,41 @@ class ProcessManager:
         """Spawn multiple processes."""
         events: list[EventType] = []
 
-        health_pipes = (
-            self.health_checker.create_pipes()
+        health_queue = (
+            self.health_checker.create_queue()
             if self.health_checker
-            else [None] * self.args.workers
+            else None
         )
 
         if self.health_checker:
             logger.info(
-                "Created %d health pipe pairs for workers",
-                len(health_pipes),
+                "Created shared health queue for %d workers",
+                self.args.workers,
             )
 
         for process in range(self.args.workers):
             event = Event()
-            has_health_pipe = health_pipes[process] is not None
+            has_health_queue = health_queue is not None
             logger.info(
-                "Spawning worker-%d (health_pipe: %s)",
+                "Spawning worker-%d (health_queue: %s)",
                 process,
-                "yes" if has_health_pipe else "no",
+                "yes" if has_health_queue else "no",
             )
             work_proc = Process(
                 target=self.worker_function,
                 kwargs={
                     "args": self.args,
-                    "health_pipe": health_pipes[process],
+                    "health_pipe": health_queue,
                 },
                 name=f"worker-{process}",
                 daemon=False,
             )
             work_proc.start()
             logger.info(
-                "Started process worker-%d with pid %s (health_pipe: %s)",
+                "Started process worker-%d with pid %s (health_queue: %s)",
                 process,
                 work_proc.pid,
-                "yes" if has_health_pipe else "no",
+                "yes" if has_health_queue else "no",
             )
             self.workers.append(work_proc)
             events.append(event)

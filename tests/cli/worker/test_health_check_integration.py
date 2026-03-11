@@ -2,15 +2,13 @@
 Integration test for health check with actual worker processes.
 
 This test reproduces the heartbeat flow to verify workers send heartbeats
-through pipes to the health checker.
+through Queue to health checker.
 """
 
 import asyncio
-import json
 import time
-from multiprocessing import Pipe, Process
+from multiprocessing import Process, Queue
 
-import pytest
 
 from taskiq.cli.worker.health_checker import HealthChecker
 from taskiq.cli.worker.health_server import HealthHTTPServer
@@ -19,7 +17,7 @@ from unittest.mock import MagicMock
 
 def worker_target(
     args_dict: dict,
-    health_pipe,
+    health_queue,
 ) -> None:
     """
     Simulated worker function that sends heartbeats.
@@ -28,19 +26,18 @@ def worker_target(
     """
     from multiprocessing import current_process
     import time
-    import asyncio
 
     # Simulate worker startup
     proc_name = current_process().name
-    print(f"[{proc_name}] Worker starting with health_pipe: {health_pipe is not None}")
+    print(f"[{proc_name}] Worker starting with health_queue: {health_queue is not None}")
 
-    if health_pipe:
+    if health_queue:
         async def send_heartbeat() -> None:
             """Send periodic health heartbeats."""
             count = 0
             while True:
                 try:
-                    health_pipe.send({
+                    health_queue.put({
                         "worker_id": proc_name,
                         "timestamp": time.time(),
                         "broker_connected": True,
@@ -55,52 +52,72 @@ def worker_target(
         # Run heartbeat task
         asyncio.run(send_heartbeat())
     else:
-        print(f"[{proc_name}] No health pipe provided")
+        print(f"[{proc_name}] No health queue provided")
         # Simulate work
         time.sleep(5)
 
 
-def test_worker_sends_heartbeat_via_pipe_sync() -> None:
+def test_worker_sends_heartbeat_via_queue_sync() -> None:
     """
-    Test that a simulated worker sends heartbeats through pipe.
+    Test that a simulated worker sends heartbeats through Queue.
 
-    This is a synchronous test to verify pipe communication works.
+    This is a synchronous test to verify Queue communication works.
     """
-    reader, writer = Pipe(duplex=False)
+    health_queue = Queue()
 
     # Start simulated worker in process
     proc = Process(
         target=worker_target,
-        kwargs={"args_dict": {}, "health_pipe": writer},
-        name="test-worker-0",
-        daemon=True,
+        kwargs={"args_dict": {}, "health_queue": health_queue},
+        name="worker-0",
+        daemon=False,
     )
     proc.start()
 
-    # Read heartbeats from pipe
     received = []
-    timeout = time.time() + 5  # 5 second timeout
+    timeout = time.time() + 10  # 10 second timeout
+    last_heartbeat_time = None
 
+    print("[Main] Waiting for heartbeats...")
     while time.time() < timeout:
-        if reader.poll():
-            try:
-                data = reader.recv()
+        try:
+            if not health_queue.empty():
+                data = health_queue.get_nowait()
                 received.append(data)
-                print(f"[Main] Received heartbeat: {data}")
+                last_heartbeat_time = time.time()
+                print(f"[Main] Received heartbeat #{len(received)}: {data}")
                 if len(received) >= 2:  # Got 2 heartbeats
+                    print("[Main] Received 2 heartbeats, stopping")
                     break
-            except Exception as e:
-                print(f"[Main] Read error: {e}")
+
+            # Check if worker is still alive
+            if not proc.is_alive():
+                print(f"[Main] Worker process died, exit code: {proc.exitcode}")
                 break
+
+            # If we got a heartbeat but haven't seen one in 5 seconds, stop
+            if last_heartbeat_time and (time.time() - last_heartbeat_time) > 5:
+                print(f"[Main] No heartbeat for 5 seconds, stopping")
+                break
+
+        except Exception as e:
+            print(f"[Main] Read error: {e}")
+            break
         time.sleep(0.1)
 
     # Cleanup
-    proc.terminate()
-    proc.join(timeout=2)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(timeout=2)
+    else:
+        proc.join(timeout=2)
 
+    health_queue.close()
+
+    print(f"[Main] Total heartbeats received: {len(received)}")
     # Verify heartbeats were received
     assert len(received) >= 1, f"Expected at least 1 heartbeat, got {len(received)}"
-    assert received[0]["worker_id"] == "test-worker-0"
+    assert received[0]["worker_id"] == "worker-0"
     assert received[0]["broker_connected"] is True
 
 
@@ -108,7 +125,7 @@ def test_health_checker_receives_worker_heartbeats() -> None:
     """
     Test that HealthChecker receives heartbeats from worker process.
 
-    This tests the pipe communication between worker and HealthChecker.
+    This tests Queue communication between worker and HealthChecker.
     """
     action_queue = MagicMock()
     checker = HealthChecker(
@@ -119,16 +136,25 @@ def test_health_checker_receives_worker_heartbeats() -> None:
         check_interval=0.1,
     )
 
-    # Create pipe
-    writers = checker.create_pipes()
-    assert len(writers) == 1
+    health_queue = checker.create_queue()
+    assert health_queue is not None
+
+    # Start HealthChecker monitor in background thread
+    import threading
+    monitor_thread = threading.Thread(
+        target=lambda: asyncio.run(checker.monitor()),
+        daemon=True,
+    )
+    monitor_thread.start()
+    time.sleep(0.2)  # Give monitor time to start
+    print("[Main] HealthChecker monitor started")
 
     # Start worker that sends heartbeats
     proc = Process(
         target=worker_target,
-        kwargs={"args_dict": {}, "health_pipe": writers[0]},
-        name="test-worker-0",
-        daemon=True,
+        kwargs={"args_dict": {}, "health_queue": health_queue},
+        name="worker-0",  # Must match HealthChecker's naming scheme
+        daemon=False,  # Non-daemon for proper cleanup
     )
     proc.start()
 

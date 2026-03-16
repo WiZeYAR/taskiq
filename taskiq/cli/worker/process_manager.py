@@ -397,7 +397,7 @@ class ProcessManager:
 
         while True:
             sleep(1)
-            self._reloaded_workers: set[int] = set()
+            self._reloaded_workers = set()
             # We bulk_process all pending events.
             while not self.action_queue.empty():
                 action = self.action_queue.get()

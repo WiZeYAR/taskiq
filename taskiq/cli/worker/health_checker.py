@@ -79,6 +79,75 @@ class HealthChecker:
         logger.info("Created shared health queue")
         return self.health_queue
 
+    def _process_heartbeat_data(self, data: dict[str, Any]) -> None:
+        """
+        Process a single heartbeat message from a worker.
+
+        :param data: Heartbeat data dictionary.
+        """
+        worker_name = data["worker_id"]
+        self.last_heartbeat[worker_name] = data["timestamp"]
+        self.reloads_pending.discard(worker_name)
+        self.worker_health[worker_name].update(
+            {
+                "status": "alive",
+                "broker_connected": data.get(
+                    "broker_connected",
+                    False,
+                ),
+                "last_heartbeat": data["timestamp"],
+            },
+        )
+        logger.debug(
+            "Received heartbeat from %s at %s (broker_connected: %s)",
+            worker_name,
+            data["timestamp"],
+            data.get("broker_connected", False),
+        )
+
+    def _check_stuck_workers(self, now: float) -> None:
+        """
+        Check for stuck workers and trigger restarts.
+
+        :param now: Current timestamp.
+        """
+        from taskiq.cli.worker.process_manager import ReloadOneAction  # noqa: PLC0415
+
+        for i in range(self.num_workers):
+            worker_name = f"worker-{i}"
+            last_seen = self.last_heartbeat.get(worker_name)
+
+            if last_seen is not None:
+                if now - last_seen > self.heartbeat_timeout:
+                    msg = (
+                        f"{worker_name} is stuck "
+                        f"(no heartbeat for {now - last_seen:.1f}s)"
+                    )
+                    logger.warning(msg)
+                    self.worker_health[worker_name]["status"] = "stuck"
+
+                    if worker_name not in self.reloads_pending:
+                        self.reloads_pending.add(worker_name)
+                        self.action_queue.put(
+                            ReloadOneAction(worker_num=i, is_reload_all=False),
+                        )
+            elif self.startup_timeout > 0:
+                initialized_at = self.worker_health[worker_name].get(
+                    "initialized_at",
+                    now,
+                )
+                if now - initialized_at > self.startup_timeout:
+                    logger.warning(
+                        f"{worker_name} failed to send initial heartbeat",
+                    )
+                    self.worker_health[worker_name]["status"] = "stuck"
+
+                    if worker_name not in self.reloads_pending:
+                        self.reloads_pending.add(worker_name)
+                        self.action_queue.put(
+                            ReloadOneAction(worker_num=i, is_reload_all=False),
+                        )
+
     async def monitor(self) -> None:
         """
         Background task that monitors worker heartbeats.
@@ -86,73 +155,18 @@ class HealthChecker:
         Reads heartbeats from queue, updates health status,
         and triggers restarts for stuck workers.
         """
-        # Import at runtime to avoid circular import
-        from taskiq.cli.worker.process_manager import ReloadOneAction  # noqa: PLC0415
-
         logger.info("Health monitor started for %d workers", self.num_workers)
 
         while True:
             while not self.health_queue.empty():
                 try:
                     data = self.health_queue.get_nowait()
-                    worker_name = data["worker_id"]
-                    self.last_heartbeat[worker_name] = data["timestamp"]
-                    self.reloads_pending.discard(worker_name)
-                    self.worker_health[worker_name].update(
-                        {
-                            "status": "alive",
-                            "broker_connected": data.get(
-                                "broker_connected",
-                                False,
-                            ),
-                            "last_heartbeat": data["timestamp"],
-                        },
-                    )
-                    logger.debug(
-                        "Received heartbeat from %s at %s (broker_connected: %s)",
-                        worker_name,
-                        data["timestamp"],
-                        data.get("broker_connected", False),
-                    )
-                except Exception:
-                    pass
+                    self._process_heartbeat_data(data)
+                except Exception as e:
+                    logger.debug("Failed to process heartbeat: %s", e)
 
-            # Check for stuck workers
             now = time.time()
-            for i in range(self.num_workers):
-                worker_name = f"worker-{i}"
-                last_seen = self.last_heartbeat.get(worker_name)
-
-                if last_seen is not None:
-                    if now - last_seen > self.heartbeat_timeout:
-                        msg = (
-                            f"{worker_name} is stuck "
-                            f"(no heartbeat for {now - last_seen:.1f}s)"
-                        )
-                        logger.warning(msg)
-                        self.worker_health[worker_name]["status"] = "stuck"
-
-                        if worker_name not in self.reloads_pending:
-                            self.reloads_pending.add(worker_name)
-                            self.action_queue.put(
-                                ReloadOneAction(worker_num=i, is_reload_all=False),
-                            )
-                elif self.startup_timeout > 0:
-                    initialized_at = self.worker_health[worker_name].get(
-                        "initialized_at",
-                        now,
-                    )
-                    if now - initialized_at > self.startup_timeout:
-                        logger.warning(
-                            f"{worker_name} failed to send initial heartbeat",
-                        )
-                        self.worker_health[worker_name]["status"] = "stuck"
-
-                        if worker_name not in self.reloads_pending:
-                            self.reloads_pending.add(worker_name)
-                            self.action_queue.put(
-                                ReloadOneAction(worker_num=i, is_reload_all=False),
-                            )
+            self._check_stuck_workers(now)
 
             await asyncio.sleep(self.check_interval)
 

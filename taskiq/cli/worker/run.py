@@ -27,7 +27,97 @@ try:
 except ImportError:
     Observer = None  # type: ignore
 
+
 logger = logging.getLogger("taskiq.worker")
+
+
+async def send_heartbeat(
+    health_pipe: Any,
+    broker: AsyncBroker,
+) -> None:
+    """
+    Send periodic health heartbeats to main process.
+
+    :param health_pipe: Queue for sending heartbeats.
+    :param broker: Broker instance (may have connection checking).
+    """
+    logger.debug(
+        "Heartbeat sender started for %s",
+        current_process().name,
+    )
+    heartbeat_count = 0
+    while True:
+        try:
+            # Check broker connection status
+            # Note: Different brokers may implement this differently
+            broker_connected = True  # Default to True if no check available
+
+            logger.debug(
+                "Preparing to send heartbeat #%d from %s",
+                heartbeat_count + 1,
+                current_process().name,
+            )
+
+            # Queue.put() is synchronous, no await needed
+            health_pipe.put(
+                {
+                    "worker_id": current_process().name,
+                    "timestamp": time.time(),
+                    "broker_connected": broker_connected,
+                },
+            )
+
+            heartbeat_count += 1
+            logger.debug(
+                "Sent heartbeat #%d from %s at %s",
+                heartbeat_count,
+                current_process().name,
+                time.time(),
+            )
+        except (ConnectionError, OSError) as e:
+            # Queue closed, stop sending heartbeats
+            logger.error(
+                "Health queue error for %s (stopping heartbeats): %s",
+                current_process().name,
+                e,
+            )
+            break
+        except Exception as e:
+            # Unexpected error - log but continue
+            logger.error(
+                "Unexpected heartbeat error for %s: %s",
+                current_process().name,
+                e,
+                exc_info=True,
+            )
+        await asyncio.sleep(5)  # Send every 5 seconds
+
+
+async def run_with_heartbeat(
+    health_pipe: Any,
+    broker: AsyncBroker,
+    receiver: Receiver,
+    shutdown_event: asyncio.Event,
+) -> None:
+    """
+    Run receiver and heartbeat task concurrently.
+
+    :param health_pipe: Queue for sending heartbeats.
+    :param broker: Broker instance.
+    :param receiver: Receiver instance.
+    :param shutdown_event: Shutdown event.
+    """
+    heartbeat_task = asyncio.create_task(
+        send_heartbeat(health_pipe, broker),
+    )
+    receiver_task = asyncio.create_task(receiver.listen(shutdown_event))
+    _, pending = await asyncio.wait(
+        [heartbeat_task, receiver_task],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    # Cancel pending tasks
+    for task in pending:
+        task.cancel()
 
 
 async def shutdown_broker(broker: AsyncBroker, timeout: float) -> None:
@@ -71,6 +161,85 @@ def get_receiver_type(args: WorkerArgs) -> type[Receiver]:
     return receiver_type
 
 
+def _setup_logging(args: WorkerArgs) -> None:
+    """Configure logging for spawn method workers."""
+    if args.configure_logging and get_start_method() == "spawn":
+        logging.basicConfig(
+            level=args.log_level,
+            format=args.log_format,
+        )
+
+
+def _setup_broker(args: WorkerArgs) -> AsyncBroker:
+    """
+    Setup and return broker instance.
+
+    :param args: CLI arguments.
+    :returns: Configured broker instance.
+    :raises ValueError: if broker is not valid.
+    """
+    if isinstance(args.broker, AsyncBroker):
+        broker = args.broker
+    else:
+        broker = import_object(args.broker, app_dir=args.app_dir)
+        if inspect.isfunction(broker):
+            broker = broker()
+        if not isinstance(broker, AsyncBroker):
+            raise ValueError(
+                "Unknown broker type. Please use AsyncBroker instance "
+                "or pass broker factory function that returns an AsyncBroker instance.",
+            )
+
+    broker.is_worker_process = True
+    import_tasks(args.modules, args.tasks_pattern, args.fs_discover)
+    return broker
+
+
+def _setup_event_loop() -> asyncio.AbstractEventLoop:
+    """Create and set up event loop."""
+    if uvloop is not None:
+        logger.debug("UVLOOP found. Using it as async runner")
+        loop = uvloop.new_event_loop()  # type: ignore
+    else:
+        loop = asyncio.new_event_loop()
+
+    asyncio.set_event_loop(loop)
+    return loop
+
+
+def _setup_receiver(args: WorkerArgs, broker: AsyncBroker) -> tuple[Receiver, Executor]:
+    """
+    Setup receiver and executor.
+
+    :param args: CLI arguments.
+    :param broker: Broker instance.
+    :returns: Tuple of (receiver, executor).
+    """
+    receiver_type = get_receiver_type(args)
+    receiver_kwargs = dict(args.receiver_arg)
+
+    executor: Executor
+    if args.use_process_pool:
+        executor = ProcessPoolExecutor(max_workers=args.max_process_pool_processes)
+    else:
+        executor = ThreadPoolExecutor(max_workers=args.max_threadpool_threads)
+
+    receiver = receiver_type(
+        broker=broker,
+        executor=executor,
+        validate_params=not args.no_parse,
+        max_async_tasks=args.max_async_tasks,
+        max_prefetch=args.max_prefetch,
+        propagate_exceptions=not args.no_propagate_errors,
+        ack_type=args.ack_type,
+        max_tasks_to_execute=args.max_tasks_per_child,
+        wait_tasks_timeout=args.wait_tasks_timeout,
+        **receiver_kwargs,  # type: ignore
+    )
+
+    return receiver, executor
+
+
 def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
     """
     This function starts actual listening process.
@@ -85,13 +254,10 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
     :raises ValueError: if broker is not an AsyncBroker instance.
     :raises ValueError: if receiver is not a Receiver type.
     """
+    _setup_logging(args)
+
     shutdown_event = asyncio.Event()
     hardkill_counter = 0
-    if args.configure_logging and get_start_method() == "spawn":
-        logging.basicConfig(
-            level=args.log_level,
-            format=args.log_format,
-        )
 
     def interrupt_handler(signum: int, _frame: Any) -> None:
         """
@@ -121,139 +287,34 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
     if sys.platform != "win32":
         signal.signal(signal.SIGHUP, interrupt_handler)
 
-    if uvloop is not None:
-        logger.debug("UVLOOP found. Using it as async runner")
-        loop = uvloop.new_event_loop()  # type: ignore
-    else:
-        loop = asyncio.new_event_loop()
+    loop = _setup_event_loop()
+    broker = _setup_broker(args)
 
-    asyncio.set_event_loop(loop)
-
-    # This option signals that current
-    # broker is running as a worker.
-    # We must set this field before importing tasks,
-    # so broker will remember all tasks it's related to.
-
-    if isinstance(args.broker, AsyncBroker):
-        broker = args.broker
-    else:
-        broker = import_object(args.broker, app_dir=args.app_dir)
-        if inspect.isfunction(broker):
-            broker = broker()
-        if not isinstance(broker, AsyncBroker):
-            raise ValueError(
-                "Unknown broker type. Please use AsyncBroker instance "
-                "or pass broker factory function that returns an AsyncBroker instance.",
-            )
-
-    broker.is_worker_process = True
-    import_tasks(args.modules, args.tasks_pattern, args.fs_discover)
-
-    receiver_type = get_receiver_type(args)
-    receiver_kwargs = dict(args.receiver_arg)
-
-    executor: Executor
-    if args.use_process_pool:
-        executor = ProcessPoolExecutor(max_workers=args.max_process_pool_processes)
-    else:
-        executor = ThreadPoolExecutor(max_workers=args.max_threadpool_threads)
-
+    executor: Executor | None = None
     try:
         logger.debug("Initialize receiver.")
-        with executor as pool:
-            receiver = receiver_type(
-                broker=broker,
-                executor=pool,
-                validate_params=not args.no_parse,
-                max_async_tasks=args.max_async_tasks,
-                max_async_tasks_jitter=args.max_async_tasks_jitter,
-                max_prefetch=args.max_prefetch,
-                propagate_exceptions=not args.no_propagate_errors,
-                ack_type=args.ack_type,
-                max_tasks_to_execute=args.max_tasks_per_child,
-                wait_tasks_timeout=args.wait_tasks_timeout,
-                **receiver_kwargs,  # type: ignore
+        receiver, executor = _setup_receiver(args, broker)
+
+        # Start heartbeat sender if health queue is provided
+        if health_pipe:
+            logger.debug(
+                "Health queue provided for %s, starting heartbeat sender",
+                current_process().name,
             )
-
-            # Start heartbeat sender if health queue is provided
-            if health_pipe:
-                logger.debug(
-                    "Health queue provided for %s, starting heartbeat sender",
-                    current_process().name,
-                )
-
-                async def send_heartbeat() -> None:
-                    """Send periodic health heartbeats to main process."""
-                    logger.debug(
-                        "Heartbeat sender started for %s", current_process().name,
-                    )
-                    heartbeat_count = 0
-                    while True:
-                        try:
-                            # Check broker connection status
-                            # Note: Different brokers may implement this differently
-                            broker_connected = (
-                                True  # Default to True if no check available
-                            )
-
-                            logger.debug(
-                                "Preparing to send heartbeat #%d from %s",
-                                heartbeat_count + 1,
-                                current_process().name,
-                            )
-
-                            # Queue.put() is synchronous, no await needed
-                            health_pipe.put(
-                                {
-                                    "worker_id": current_process().name,
-                                    "timestamp": time.time(),
-                                    "broker_connected": broker_connected,
-                                },
-                            )
-
-                            heartbeat_count += 1
-                            logger.debug(
-                                "Sent heartbeat #%d from %s at %s",
-                                heartbeat_count,
-                                current_process().name,
-                                time.time(),
-                            )
-                        except (ConnectionError, OSError) as e:
-                            # Queue closed, stop sending heartbeats
-                            logger.error(
-                                "Health queue error for %s (stopping heartbeats): %s",
-                                current_process().name,
-                                e,
-                            )
-                            break
-                        except Exception as e:
-                            # Unexpected error - log but continue
-                            logger.error(
-                                "Unexpected heartbeat error for %s: %s",
-                                current_process().name,
-                                e,
-                                exc_info=True,
-                            )
-                        await asyncio.sleep(5)  # Send every 5 seconds
-
-                # Run both tasks concurrently
-                async def run_with_heartbeat() -> None:
-                    """Run receiver and heartbeat task concurrently."""
-                    heartbeat_task = asyncio.create_task(send_heartbeat())
-                    receiver_task = asyncio.create_task(receiver.listen(shutdown_event))
-                    done, pending = await asyncio.wait(
-                        [heartbeat_task, receiver_task],
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    # Cancel pending tasks
-                    for task in pending:
-                        task.cancel()
-
-                loop.run_until_complete(run_with_heartbeat())
-            else:
-                logger.info("No health queue provided for %s", current_process().name)
-                loop.run_until_complete(receiver.listen(shutdown_event))
+            loop.run_until_complete(
+                run_with_heartbeat(
+                    health_pipe,
+                    broker,
+                    receiver,
+                    shutdown_event,
+                ),
+            )
+        else:
+            logger.info("No health queue provided for %s", current_process().name)
+            loop.run_until_complete(receiver.listen(shutdown_event))
     finally:
+        if executor:
+            executor.shutdown(wait=True)
         loop.run_until_complete(shutdown_broker(broker, args.shutdown_timeout))
 
 

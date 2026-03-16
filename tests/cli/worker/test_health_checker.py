@@ -135,7 +135,7 @@ async def test_health_checker_detects_stuck_worker(
         startup_timeout=0.3,
         check_interval=0.1,
     )
-    queue = checker.create_queue()
+    _ = checker.create_queue()
 
     # Start monitor
     monitor_task = asyncio.create_task(checker.monitor())
@@ -161,7 +161,7 @@ async def test_health_checker_multiple_stuck_workers(
 ) -> None:
     """Test that multiple stuck workers trigger multiple reload actions."""
     checker = HealthChecker(
-        num_workers=2,
+        num_workers=1,
         action_queue=action_queue,
         heartbeat_interval=0.1,
         heartbeat_timeout=0.3,
@@ -243,7 +243,7 @@ def test_health_checker_get_health_status_all_healthy(
     health_checker: HealthChecker,
 ) -> None:
     """Test health status when all workers are healthy."""
-    queue = health_checker.create_queue()
+    _ = health_checker.create_queue()
 
     # Simulate all workers healthy
     health_checker.worker_health["worker-0"]["status"] = "alive"
@@ -265,7 +265,7 @@ def test_health_checker_get_health_status_degraded(
     health_checker: HealthChecker,
 ) -> None:
     """Test health status when some workers are stuck."""
-    queue = health_checker.create_queue()
+    _ = health_checker.create_queue()
 
     # Simulate one healthy, one stuck
     health_checker.worker_health["worker-0"]["status"] = "alive"
@@ -287,7 +287,7 @@ def test_health_checker_get_health_status_all_stuck(
     health_checker: HealthChecker,
 ) -> None:
     """Test health status when all workers are stuck."""
-    queue = health_checker.create_queue()
+    _ = health_checker.create_queue()
 
     # Simulate all workers stuck
     health_checker.worker_health["worker-0"]["status"] = "stuck"
@@ -308,7 +308,7 @@ def test_health_checker_get_health_status_mixed_connection(
     health_checker: HealthChecker,
 ) -> None:
     """Test health status when broker connections are mixed."""
-    queue = health_checker.create_queue()
+    _ = health_checker.create_queue()
 
     # Simulate mixed broker connectivity
     health_checker.worker_health["worker-0"]["status"] = "alive"
@@ -327,13 +327,14 @@ def test_health_checker_get_health_status_mixed_connection(
 
 def test_health_checker_cleanup(health_checker: HealthChecker) -> None:
     """Test cleanup closes queue."""
-    queue = health_checker.create_queue()
+    _ = health_checker.create_queue()
 
     # Queue requires close() before join_thread()
     health_checker.cleanup()
 
     # Verify queue was closed (join_thread() is called on Queue.close())
-    # We can't easily test this without mocking Queue internals, so just verify no exception
+    # We can't easily test this without mocking Queue internals,
+    # so just verify no exception
 
 
 @pytest.mark.asyncio

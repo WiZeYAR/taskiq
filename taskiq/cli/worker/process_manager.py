@@ -279,7 +279,87 @@ class ProcessManager:
                         worker.pid,
                     )
 
-    def start(self) -> int | None:  # noqa: C901
+    def _start_health_monitoring(self) -> threading.Thread | None:
+        """Start health checker and HTTP server in background thread."""
+        checker = self.health_checker
+        server = self.health_server
+
+        if not (checker and server):
+            return None
+
+        async def run_health_tasks() -> None:
+            """Run health checker and HTTP server concurrently."""
+            await asyncio.gather(
+                checker.monitor(),
+                server.start(),
+            )
+
+        def run_health_loop() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(run_health_tasks())
+
+        health_thread = threading.Thread(
+            target=run_health_loop,
+            daemon=True,
+            name="health-monitor",
+        )
+        health_thread.start()
+        return health_thread
+
+    def _handle_action(self, action: ProcessActionBase, restarts: int) -> int | None:
+        """
+        Handle a single action from the action queue.
+
+        :param action: Action to handle.
+        :param restarts: Current restart count.
+        :returns: New restart count or None if shutdown.
+        """
+        if isinstance(action, ReloadAllAction):
+            action.handle(
+                workers_num=len(self.workers),
+                action_queue=self.action_queue,
+            )
+            return restarts
+        if isinstance(action, ReloadOneAction):
+            # We check if max_fails is set.
+            # If it's true, we check how many times
+            # worker was reloaded.
+            if not action.is_reload_all and self.args.max_fails >= 1:
+                restarts += 1
+                if restarts >= self.args.max_fails:
+                    logger.warning("Max restarts reached. Exiting.")
+                    # Returning error status.
+                    return -1
+            # If we just reloaded this worker, skip handling.
+            if action.worker_num in self._reloaded_workers:
+                return restarts
+            action.handle(self.workers, self.args, self.worker_function)
+            self._reloaded_workers.add(action.worker_num)
+            return restarts
+        if isinstance(action, ShutdownAction):
+            logger.debug("Process manager closed, killing workers.")
+            self._shutdown_workers()
+            if self.health_checker:
+                self.health_checker.cleanup()
+            if self.health_server:
+                asyncio.run(self.health_server.stop())
+            return None
+        return restarts
+
+    def _check_dead_workers(self) -> None:
+        """Check for dead workers and schedule reloads."""
+        for worker_num, worker in enumerate(self.workers):
+            if not worker.is_alive():
+                logger.info(f"{worker.name} is dead. Scheduling reload.")
+                self.action_queue.put(
+                    ReloadOneAction(
+                        worker_num=worker_num,
+                        is_reload_all=False,
+                    ),
+                )
+
+    def start(self) -> int | None:
         """
         Start managing child processes.
 
@@ -308,75 +388,23 @@ class ProcessManager:
         :returns: status code or None.
         """
         restarts = 0
+        self._reloaded_workers: set[int] = set()
         self.prepare_workers()
 
         # Start health monitoring and HTTP server in background
         # thread if health check is enabled
-        if (checker := self.health_checker) and (server := self.health_server):
-
-            async def run_health_tasks() -> None:
-                """Run health checker and HTTP server concurrently."""
-                await asyncio.gather(
-                    checker.monitor(),
-                    server.start(),
-                )
-
-            def run_health_loop() -> None:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(run_health_tasks())
-
-            health_thread = threading.Thread(
-                target=run_health_loop,
-                daemon=True,
-                name="health-monitor",
-            )
-            health_thread.start()
-        else:
-            health_thread = None
+        self._start_health_monitoring()
 
         while True:
             sleep(1)
-            reloaded_workers = set()
+            self._reloaded_workers: set[int] = set()
             # We bulk_process all pending events.
             while not self.action_queue.empty():
                 action = self.action_queue.get()
                 logging.debug(f"Got event: {action}")
-                if isinstance(action, ReloadAllAction):
-                    action.handle(
-                        workers_num=len(self.workers),
-                        action_queue=self.action_queue,
-                    )
-                elif isinstance(action, ReloadOneAction):
-                    # We check if max_fails is set.
-                    # If it's true, we check how many times
-                    # worker was reloaded.
-                    if not action.is_reload_all and self.args.max_fails >= 1:
-                        restarts += 1
-                        if restarts >= self.args.max_fails:
-                            logger.warning("Max restarts reached. Exiting.")
-                            # Returning error status.
-                            return -1
-                    # If we just reloaded this worker, skip handling.
-                    if action.worker_num in reloaded_workers:
-                        continue
-                    action.handle(self.workers, self.args, self.worker_function)
-                    reloaded_workers.add(action.worker_num)
-                elif isinstance(action, ShutdownAction):
-                    logger.debug("Process manager closed, killing workers.")
-                    self._shutdown_workers()
-                    if self.health_checker:
-                        self.health_checker.cleanup()
-                    if self.health_server:
-                        asyncio.run(self.health_server.stop())
-                    return None
+                result = self._handle_action(action, restarts)
+                if result is None or result == -1:
+                    return result  # type: ignore
+                restarts = result
 
-            for worker_num, worker in enumerate(self.workers):
-                if not worker.is_alive():
-                    logger.info(f"{worker.name} is dead. Scheduling reload.")
-                    self.action_queue.put(
-                        ReloadOneAction(
-                            worker_num=worker_num,
-                            is_reload_all=False,
-                        ),
-                    )
+            self._check_dead_workers()

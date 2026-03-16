@@ -1,35 +1,31 @@
 """
 Integration test for health check with actual worker processes.
 
-This test reproduces the heartbeat flow to verify workers send heartbeats
+This test reproduces heartbeat flow to verify workers send heartbeats
 through Queue to health checker.
 """
 
 import asyncio
+import threading
 import time
-from multiprocessing import Process, Queue
+from multiprocessing import Process, Queue, current_process
+from typing import Any
 from unittest.mock import MagicMock
 
 from taskiq.cli.worker.health_checker import HealthChecker
 
 
 def worker_target(
-    args_dict: dict,
-    health_queue,
+    args_dict: dict[str, Any],
+    health_queue: Any,
 ) -> None:
     """
     Simulated worker function that sends heartbeats.
 
     This mimics what taskiq/cli/worker/run.py does.
     """
-    import time
-    from multiprocessing import current_process
-
     # Simulate worker startup
     proc_name = current_process().name
-    print(
-        f"[{proc_name}] Worker starting with health_queue: {health_queue is not None}",
-    )
 
     if health_queue:
 
@@ -46,16 +42,13 @@ def worker_target(
                         },
                     )
                     count += 1
-                    print(f"[{proc_name}] Sent heartbeat #{count}")
-                except Exception as e:
-                    print(f"[{proc_name}] Heartbeat error: {e}")
+                except Exception:
                     break
                 await asyncio.sleep(1)  # 1 second interval for testing
 
         # Run heartbeat task
         asyncio.run(send_heartbeat())
     else:
-        print(f"[{proc_name}] No health queue provided")
         # Simulate work
         time.sleep(5)
 
@@ -66,7 +59,7 @@ def test_worker_sends_heartbeat_via_queue_sync() -> None:
 
     This is a synchronous test to verify Queue communication works.
     """
-    health_queue = Queue()
+    health_queue: Queue[dict[str, Any]] = Queue()
 
     # Start simulated worker in process
     proc = Process(
@@ -81,30 +74,24 @@ def test_worker_sends_heartbeat_via_queue_sync() -> None:
     timeout = time.time() + 10  # 10 second timeout
     last_heartbeat_time = None
 
-    print("[Main] Waiting for heartbeats...")
     while time.time() < timeout:
         try:
             if not health_queue.empty():
                 data = health_queue.get_nowait()
                 received.append(data)
                 last_heartbeat_time = time.time()
-                print(f"[Main] Received heartbeat #{len(received)}: {data}")
                 if len(received) >= 2:  # Got 2 heartbeats
-                    print("[Main] Received 2 heartbeats, stopping")
                     break
 
             # Check if worker is still alive
             if not proc.is_alive():
-                print(f"[Main] Worker process died, exit code: {proc.exitcode}")
                 break
 
             # If we got a heartbeat but haven't seen one in 5 seconds, stop
             if last_heartbeat_time and (time.time() - last_heartbeat_time) > 5:
-                print("[Main] No heartbeat for 5 seconds, stopping")
                 break
 
-        except Exception as e:
-            print(f"[Main] Read error: {e}")
+        except Exception:
             break
         time.sleep(0.1)
 
@@ -117,7 +104,6 @@ def test_worker_sends_heartbeat_via_queue_sync() -> None:
 
     health_queue.close()
 
-    print(f"[Main] Total heartbeats received: {len(received)}")
     # Verify heartbeats were received
     assert len(received) >= 1, f"Expected at least 1 heartbeat, got {len(received)}"
     assert received[0]["worker_id"] == "worker-0"
@@ -143,15 +129,12 @@ def test_health_checker_receives_worker_heartbeats() -> None:
     assert health_queue is not None
 
     # Start HealthChecker monitor in background thread
-    import threading
-
     monitor_thread = threading.Thread(
         target=lambda: asyncio.run(checker.monitor()),
         daemon=True,
     )
     monitor_thread.start()
     time.sleep(0.2)  # Give monitor time to start
-    print("[Main] HealthChecker monitor started")
 
     # Start worker that sends heartbeats
     proc = Process(
@@ -167,7 +150,6 @@ def test_health_checker_receives_worker_heartbeats() -> None:
 
     # Check health status
     status = checker.get_health_status()
-    print(f"Health status: {status}")
 
     # Cleanup
     proc.terminate()

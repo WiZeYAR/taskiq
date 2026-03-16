@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 from multiprocessing import Queue
-from typing import Any
+from typing import Any, NoReturn
 
 logger = logging.getLogger("taskiq.health-checker")
 
@@ -148,7 +148,7 @@ class HealthChecker:
                             ReloadOneAction(worker_num=i, is_reload_all=False),
                         )
 
-    async def monitor(self) -> None:
+    async def monitor(self) -> NoReturn:
         """
         Background task that monitors worker heartbeats.
 

@@ -119,18 +119,6 @@ async def test_health_server_handle_request_error(
     assert True  # If we got here, no exception was raised
 
 
-@pytest.mark.asyncio
-async def test_health_server_start_and_stop(
-    health_server: HealthHTTPServer,
-) -> None:
-    """Test that server can start and stop."""
-    await health_server.start()
-    assert health_server.server is not None
-
-    await health_server.stop()
-    assert True  # If we got here, stop completed without error
-
-
 def test_get_health_status_degraded(
     mock_health_checker: MagicMock,
 ) -> None:

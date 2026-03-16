@@ -8,7 +8,6 @@ Detects worker crashes, stuck processes, and broker disconnections.
 import asyncio
 import logging
 import time
-from contextlib import suppress
 from multiprocessing import Queue
 from typing import Any
 

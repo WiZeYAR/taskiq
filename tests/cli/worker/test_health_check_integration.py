@@ -8,11 +8,9 @@ through Queue to health checker.
 import asyncio
 import time
 from multiprocessing import Process, Queue
-
+from unittest.mock import MagicMock
 
 from taskiq.cli.worker.health_checker import HealthChecker
-from taskiq.cli.worker.health_server import HealthHTTPServer
-from unittest.mock import MagicMock
 
 
 def worker_target(
@@ -24,24 +22,29 @@ def worker_target(
 
     This mimics what taskiq/cli/worker/run.py does.
     """
-    from multiprocessing import current_process
     import time
+    from multiprocessing import current_process
 
     # Simulate worker startup
     proc_name = current_process().name
-    print(f"[{proc_name}] Worker starting with health_queue: {health_queue is not None}")
+    print(
+        f"[{proc_name}] Worker starting with health_queue: {health_queue is not None}",
+    )
 
     if health_queue:
+
         async def send_heartbeat() -> None:
             """Send periodic health heartbeats."""
             count = 0
             while True:
                 try:
-                    health_queue.put({
-                        "worker_id": proc_name,
-                        "timestamp": time.time(),
-                        "broker_connected": True,
-                    })
+                    health_queue.put(
+                        {
+                            "worker_id": proc_name,
+                            "timestamp": time.time(),
+                            "broker_connected": True,
+                        },
+                    )
                     count += 1
                     print(f"[{proc_name}] Sent heartbeat #{count}")
                 except Exception as e:
@@ -97,7 +100,7 @@ def test_worker_sends_heartbeat_via_queue_sync() -> None:
 
             # If we got a heartbeat but haven't seen one in 5 seconds, stop
             if last_heartbeat_time and (time.time() - last_heartbeat_time) > 5:
-                print(f"[Main] No heartbeat for 5 seconds, stopping")
+                print("[Main] No heartbeat for 5 seconds, stopping")
                 break
 
         except Exception as e:
@@ -141,6 +144,7 @@ def test_health_checker_receives_worker_heartbeats() -> None:
 
     # Start HealthChecker monitor in background thread
     import threading
+
     monitor_thread = threading.Thread(
         target=lambda: asyncio.run(checker.monitor()),
         daemon=True,
@@ -171,6 +175,10 @@ def test_health_checker_receives_worker_heartbeats() -> None:
     checker.cleanup()
 
     # Verify worker is detected as alive
-    assert status["status"] == "healthy", f"Expected 'healthy', got '{status['status']}'"
-    assert status["workers"]["alive"] == 1, f"Expected 1 alive worker, got {status['workers']['alive']}"
+    assert (
+        status["status"] == "healthy"
+    ), f"Expected 'healthy', got '{status['status']}'"
+    assert (
+        status["workers"]["alive"] == 1
+    ), f"Expected 1 alive worker, got {status['workers']['alive']}"
     assert status["workers"]["stuck"] == 0

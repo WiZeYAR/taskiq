@@ -184,7 +184,9 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
 
                 async def send_heartbeat() -> None:
                     """Send periodic health heartbeats to main process."""
-                    logger.debug("Heartbeat sender started for %s", current_process().name)
+                    logger.debug(
+                        "Heartbeat sender started for %s", current_process().name,
+                    )
                     heartbeat_count = 0
                     while True:
                         try:

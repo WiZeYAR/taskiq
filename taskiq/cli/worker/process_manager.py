@@ -222,9 +222,7 @@ class ProcessManager:
         events: list[EventType] = []
 
         health_queue = (
-            self.health_checker.create_queue()
-            if self.health_checker
-            else None
+            self.health_checker.create_queue() if self.health_checker else None
         )
 
         if self.health_checker:
@@ -314,7 +312,7 @@ class ProcessManager:
 
         # Start health monitoring and HTTP server in background
         # thread if health check is enabled
-        if (checker:=self.health_checker) and (server := self.health_server):
+        if (checker := self.health_checker) and (server := self.health_server):
 
             async def run_health_tasks() -> None:
                 """Run health checker and HTTP server concurrently."""

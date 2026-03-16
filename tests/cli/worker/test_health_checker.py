@@ -7,7 +7,6 @@ Tests worker health monitoring via heartbeat IPC using Queue.
 import asyncio
 import time
 from unittest.mock import MagicMock
-from multiprocessing import Queue
 
 import pytest
 

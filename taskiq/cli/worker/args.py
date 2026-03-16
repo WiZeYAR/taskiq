@@ -56,7 +56,7 @@ class WorkerArgs:
     hardkill_count: int = 3
     use_process_pool: bool = False
     health_port: int | None = None
-    health_host: str = "0.0.0.0"  # noqa: PIE794,S104
+    health_host: str = "0.0.0.0"  # noqa: S104
 
     @classmethod
     def from_cli(
@@ -291,7 +291,7 @@ class WorkerArgs:
             "--health-host",
             type=str,
             dest="health_host",
-            default="0.0.0.0",  # noqa: PIE794,S104
+            default="0.0.0.0",  # noqa: S104
             help="Host for HTTP health check server (default: 0.0.0.0).",
         )
 

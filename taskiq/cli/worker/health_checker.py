@@ -24,7 +24,6 @@ class HealthChecker:
     - Broker disconnected (via heartbeat data)
 
     :param num_workers: Number of worker subprocesses.
-    :param action_queue: Queue for sending reload actions to ProcessManager.
     :param heartbeat_interval: Seconds between heartbeats from workers.
     :param heartbeat_timeout: Seconds before worker considered stuck (3x interval).
     :param startup_timeout: Seconds to wait for first heartbeat before stuck.
@@ -34,25 +33,22 @@ class HealthChecker:
     def __init__(
         self,
         num_workers: int,
-        action_queue: Any,
         heartbeat_interval: float = 5.0,
         heartbeat_timeout: float = 15.0,
         startup_timeout: float = 0.0,
         check_interval: float = 0.1,
     ) -> None:
         self.num_workers = num_workers
-        self.action_queue = action_queue
         self.heartbeat_interval = heartbeat_interval
         self.heartbeat_timeout = heartbeat_timeout
         self.startup_timeout = startup_timeout
         self.check_interval = check_interval
 
-        self.health_queue: Any = None
+        self.health_queue: Queue
         self.last_heartbeat: dict[str, float | None] = {}
         self.worker_health: dict[str, dict[str, Any]] = {}
-        self.reloads_pending: set[str] = set()
 
-    def create_queue(self) -> Any:
+    def create_queue(self) -> Queue:
         """
         Create shared queue for all workers to send heartbeats.
 
@@ -87,7 +83,6 @@ class HealthChecker:
         """
         worker_name = data["worker_id"]
         self.last_heartbeat[worker_name] = data["timestamp"]
-        self.reloads_pending.discard(worker_name)
         self.worker_health[worker_name].update(
             {
                 "status": "alive",
@@ -107,12 +102,10 @@ class HealthChecker:
 
     def _check_stuck_workers(self, now: float) -> None:
         """
-        Check for stuck workers and trigger restarts.
+        Check for stuck workers and update their status.
 
         :param now: Current timestamp.
         """
-        from taskiq.cli.worker.process_manager import ReloadOneAction  # noqa: PLC0415
-
         for i in range(self.num_workers):
             worker_name = f"worker-{i}"
             last_seen = self.last_heartbeat.get(worker_name)
@@ -125,12 +118,6 @@ class HealthChecker:
                     )
                     logger.warning(msg)
                     self.worker_health[worker_name]["status"] = "stuck"
-
-                    if worker_name not in self.reloads_pending:
-                        self.reloads_pending.add(worker_name)
-                        self.action_queue.put(
-                            ReloadOneAction(worker_num=i, is_reload_all=False),
-                        )
             elif self.startup_timeout > 0:
                 initialized_at = self.worker_health[worker_name].get(
                     "initialized_at",
@@ -142,18 +129,11 @@ class HealthChecker:
                     )
                     self.worker_health[worker_name]["status"] = "stuck"
 
-                    if worker_name not in self.reloads_pending:
-                        self.reloads_pending.add(worker_name)
-                        self.action_queue.put(
-                            ReloadOneAction(worker_num=i, is_reload_all=False),
-                        )
-
     async def monitor(self) -> NoReturn:
         """
         Background task that monitors worker heartbeats.
 
-        Reads heartbeats from queue, updates health status,
-        and triggers restarts for stuck workers.
+        Reads heartbeats from queue and updates health status.
         """
         logger.info("Health monitor started for %d workers", self.num_workers)
 

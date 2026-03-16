@@ -11,37 +11,27 @@ from unittest.mock import MagicMock
 import pytest
 
 from taskiq.cli.worker.health_checker import HealthChecker
-from taskiq.cli.worker.process_manager import ReloadOneAction
 
 
 @pytest.fixture
-def action_queue() -> MagicMock:
-    """Mock action queue for HealthChecker."""
-    return MagicMock()
-
-
-@pytest.fixture
-def health_checker(action_queue: MagicMock) -> HealthChecker:
+def health_checker() -> HealthChecker:
     """Create HealthChecker instance for testing."""
     return HealthChecker(
         num_workers=2,
-        action_queue=action_queue,
         heartbeat_interval=0.1,
         heartbeat_timeout=0.3,
     )
 
 
-def test_health_checker_init(action_queue: MagicMock) -> None:
+def test_health_checker_init() -> None:
     """Test HealthChecker initialization."""
     checker = HealthChecker(
         num_workers=3,
-        action_queue=action_queue,
         heartbeat_interval=5.0,
         heartbeat_timeout=15.0,
     )
 
     assert checker.num_workers == 3
-    assert checker.action_queue == action_queue
     assert checker.heartbeat_interval == 5.0
     assert checker.heartbeat_timeout == 15.0
     assert len(checker.last_heartbeat) == 0
@@ -124,99 +114,70 @@ async def test_health_checker_monitor_multiple_heartbeats(
 
 @pytest.mark.asyncio
 async def test_health_checker_detects_stuck_worker(
-    action_queue: MagicMock,
+    health_checker: HealthChecker,
 ) -> None:
-    """Test that stuck worker triggers reload action."""
-    checker = HealthChecker(
-        num_workers=1,
-        action_queue=action_queue,
-        heartbeat_interval=0.1,
-        heartbeat_timeout=0.3,
-        startup_timeout=0.3,
-        check_interval=0.1,
-    )
-    _ = checker.create_queue()
+    """Test that stuck worker is marked correctly."""
+    health_checker.startup_timeout = 0.3
+    health_checker.check_interval = 0.1
+    _ = health_checker.create_queue()
 
     # Start monitor
-    monitor_task = asyncio.create_task(checker.monitor())
+    monitor_task = asyncio.create_task(health_checker.monitor())
 
     # Wait for timeout (0.3s without heartbeat)
     await asyncio.sleep(0.4)
 
     monitor_task.cancel()
 
-    # Check reload action queued
-    action_queue.put.assert_called()
-    call_args = action_queue.put.call_args
-    assert call_args is not None
-    reload_action = call_args[0][0]
-    assert isinstance(reload_action, ReloadOneAction)
-    assert reload_action.worker_num == 0
-    assert checker.worker_health["worker-0"]["status"] == "stuck"
+    # Check worker marked as stuck
+    assert health_checker.worker_health["worker-0"]["status"] == "stuck"
+    assert health_checker.worker_health["worker-1"]["status"] == "stuck"
 
 
-    @pytest.mark.asyncio
-    async def test_health_checker_multiple_stuck_workers(
-        action_queue: MagicMock,
-    ) -> None:
-        """Test that multiple stuck workers trigger multiple reload actions."""
-        checker = HealthChecker(
-            num_workers=2,
-            action_queue=action_queue,
-            heartbeat_interval=0.1,
-            heartbeat_timeout=0.3,
-            startup_timeout=0.3,
-            check_interval=0.1,
-        )
-        queue = checker.create_queue()
+@pytest.mark.asyncio
+async def test_health_checker_multiple_stuck_workers(
+    health_checker: HealthChecker,
+) -> None:
+    """Test that multiple stuck workers are detected."""
+    health_checker.startup_timeout = 0.3
+    health_checker.check_interval = 0.1
+    queue = health_checker.create_queue()
 
-        # Start monitor
-        monitor_task = asyncio.create_task(checker.monitor())
+    # Start monitor
+    monitor_task = asyncio.create_task(health_checker.monitor())
 
-        # Send heartbeat from worker-0 after monitor starts
-        await asyncio.sleep(0.1)
-        queue.put(
-            {
-                "worker_id": "worker-0",
-                "timestamp": time.time(),
-                "broker_connected": True,
-            },
-        )
+    # Send heartbeat from worker-0 after monitor starts
+    await asyncio.sleep(0.1)
+    queue.put(
+        {
+            "worker_id": "worker-0",
+            "timestamp": time.time(),
+            "broker_connected": True,
+        },
+    )
 
-        # Wait for heartbeat timeout (worker-0 should be stuck)
-        await asyncio.sleep(0.4)
+    # Wait for heartbeat timeout (worker-0 should be stuck)
+    await asyncio.sleep(0.4)
 
-        monitor_task.cancel()
+    monitor_task.cancel()
 
-        # Check both workers triggered reload
-        # (worker-0 stuck because heartbeat timed out, worker-1 never sent heartbeat)
-        reload_calls = [
-            call
-            for call in action_queue.put.call_args_list
-            if len(call[0]) > 0 and isinstance(call[0][0], ReloadOneAction)
-        ]
-        assert len(reload_calls) == 2
-        assert checker.worker_health["worker-0"]["status"] == "stuck"
-        assert checker.worker_health["worker-1"]["status"] == "stuck"
+    # Check both workers are stuck
+    # (worker-0 stuck because heartbeat timed out, worker-1 never sent heartbeat)
+    assert health_checker.worker_health["worker-0"]["status"] == "stuck"
+    assert health_checker.worker_health["worker-1"]["status"] == "stuck"
 
 
 @pytest.mark.asyncio
 async def test_health_checker_worker_reconnects(
-    action_queue: MagicMock,
+    health_checker: HealthChecker,
 ) -> None:
     """Test that worker reconnecting after being stuck is detected correctly."""
-    checker = HealthChecker(
-        num_workers=1,
-        action_queue=action_queue,
-        heartbeat_interval=0.1,
-        heartbeat_timeout=0.3,
-        startup_timeout=0.3,
-        check_interval=0.1,
-    )
-    queue = checker.create_queue()
+    health_checker.startup_timeout = 0.3
+    health_checker.check_interval = 0.1
+    queue = health_checker.create_queue()
 
     # Start monitor
-    monitor_task = asyncio.create_task(checker.monitor())
+    monitor_task = asyncio.create_task(health_checker.monitor())
 
     # Send initial heartbeat (worker is alive)
     queue.put(
@@ -228,11 +189,11 @@ async def test_health_checker_worker_reconnects(
     )
     # Wait for monitor to process heartbeat (check_interval is 0.1s)
     await asyncio.sleep(0.15)
-    assert checker.worker_health["worker-0"]["status"] == "alive"
+    assert health_checker.worker_health["worker-0"]["status"] == "alive"
 
     # Wait for heartbeat timeout (worker becomes stuck)
     await asyncio.sleep(0.4)
-    assert checker.worker_health["worker-0"]["status"] == "stuck"
+    assert health_checker.worker_health["worker-0"]["status"] == "stuck"
 
     # Worker reconnects and sends heartbeat
     queue.put(
@@ -249,7 +210,7 @@ async def test_health_checker_worker_reconnects(
     monitor_task.cancel()
 
     # Check worker is now alive again
-    assert checker.worker_health["worker-0"]["status"] == "alive"
+    assert health_checker.worker_health["worker-0"]["status"] == "alive"
 
 
 def test_health_checker_get_health_status_all_healthy(
@@ -352,22 +313,16 @@ def test_health_checker_cleanup(health_checker: HealthChecker) -> None:
 
 @pytest.mark.asyncio
 async def test_health_checker_handles_queue_error(
-    action_queue: MagicMock,
+    health_checker: HealthChecker,
 ) -> None:
     """Test that monitor handles queue errors gracefully."""
-    checker = HealthChecker(
-        num_workers=1,
-        action_queue=action_queue,
-        heartbeat_interval=0.1,
-        heartbeat_timeout=0.3,
-    )
-    queue = checker.create_queue()
+    queue = health_checker.create_queue()
 
     # Close queue to simulate error
     queue.close()
 
     # Start monitor - should not crash
-    monitor_task = asyncio.create_task(checker.monitor())
+    monitor_task = asyncio.create_task(health_checker.monitor())
 
     # Wait to ensure monitor handled error
     await asyncio.sleep(0.2)

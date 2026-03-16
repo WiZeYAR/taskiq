@@ -203,10 +203,7 @@ class ProcessManager:
                 args.health_host,
                 args.health_port,
             )
-            self.health_checker = HealthChecker(
-                num_workers=args.workers,
-                action_queue=self.action_queue,
-            )
+            self.health_checker = HealthChecker(num_workers=args.workers)
             self.health_server = HealthHTTPServer(
                 health_checker=self.health_checker,
                 host=args.health_host,

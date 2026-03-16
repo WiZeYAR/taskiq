@@ -116,10 +116,8 @@ def test_health_checker_receives_worker_heartbeats() -> None:
 
     This tests Queue communication between worker and HealthChecker.
     """
-    action_queue = MagicMock()
     checker = HealthChecker(
         num_workers=1,
-        action_queue=action_queue,
         heartbeat_interval=1.0,
         heartbeat_timeout=3.0,
         check_interval=0.1,

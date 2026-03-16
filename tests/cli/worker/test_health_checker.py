@@ -6,11 +6,13 @@ Tests worker health monitoring via heartbeat IPC using Queue.
 
 import asyncio
 import time
-from unittest.mock import MagicMock
 
 import pytest
 
-from taskiq.cli.worker.health_checker import HealthChecker
+from taskiq.cli.worker.health_checker import (
+    HealthChecker,
+    HeartbeatData,
+)
 
 
 @pytest.fixture
@@ -149,11 +151,11 @@ async def test_health_checker_multiple_stuck_workers(
     # Send heartbeat from worker-0 after monitor starts
     await asyncio.sleep(0.1)
     queue.put(
-        {
-            "worker_id": "worker-0",
-            "timestamp": time.time(),
-            "broker_connected": True,
-        },
+        HeartbeatData(
+            worker_id="worker-0",
+            timestamp=time.time(),
+            broker_connected=True,
+        ),
     )
 
     # Wait for heartbeat timeout (worker-0 should be stuck)
@@ -193,7 +195,9 @@ async def test_health_checker_worker_reconnects(
 
     # Wait for heartbeat timeout (worker becomes stuck)
     await asyncio.sleep(0.4)
-    assert health_checker.worker_health["worker-0"]["status"] == "stuck"
+    assert (
+        health_checker.worker_health["worker-0"]["status"] == "stuck"  # type: ignore[comparison-overlap]
+    )  # Status changes from alive to stuck after timeout
 
     # Worker reconnects and sends heartbeat
     queue.put(
@@ -342,11 +346,11 @@ async def test_health_checker_empty_heartbeat_data(
 
     # Send malformed data (missing broker_connected field)
     queue.put(
-        {
+        {  # type: ignore[typeddict-item]
             "worker_id": "worker-0",
             "timestamp": time.time(),
         },
-    )
+    )  # Intentionally malformed for testing
 
     # Run monitor - sleep longer than check_interval (0.1s)
     monitor_task = asyncio.create_task(health_checker.monitor())

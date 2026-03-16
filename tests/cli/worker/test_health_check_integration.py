@@ -10,7 +10,6 @@ import threading
 import time
 from multiprocessing import Process, Queue, current_process
 from typing import Any
-from unittest.mock import MagicMock
 
 from taskiq.cli.worker.health_checker import HealthChecker
 

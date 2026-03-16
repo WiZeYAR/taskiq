@@ -5,8 +5,15 @@ Runs on the main process and exposes health status from HealthChecker.
 """
 
 import asyncio
+import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from taskiq.cli.worker.health_checker import (
+        HealthChecker,
+        HealthStatus,
+    )
 
 logger = logging.getLogger("taskiq.health-server")
 
@@ -22,7 +29,7 @@ class HealthHTTPServer:
 
     def __init__(
         self,
-        health_checker: Any,
+        health_checker: "HealthChecker",
         host: str = "0.0.0.0",  # noqa: S104
         port: int = 8000,
     ) -> None:
@@ -46,8 +53,8 @@ class HealthHTTPServer:
             method, path, _ = request_line.decode().strip().split()
 
             if method == "GET" and path == "/health":
-                status = self.health_checker.get_health_status()
-                response_body = str(status).replace("'", '"')
+                status: HealthStatus = self.health_checker.get_health_status()
+                response_body = json.dumps(status)
                 response = (
                     f"HTTP/1.1 200 OK\r\n"
                     f"Content-Type: application/json\r\n"

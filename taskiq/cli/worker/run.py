@@ -177,14 +177,14 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
 
             # Start heartbeat sender if health queue is provided
             if health_pipe:
-                logger.info(
+                logger.debug(
                     "Health queue provided for %s, starting heartbeat sender",
                     current_process().name,
                 )
 
                 async def send_heartbeat() -> None:
                     """Send periodic health heartbeats to main process."""
-                    logger.info("Heartbeat sender started for %s", current_process().name)
+                    logger.debug("Heartbeat sender started for %s", current_process().name)
                     heartbeat_count = 0
                     while True:
                         try:
@@ -210,7 +210,7 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
                             )
 
                             heartbeat_count += 1
-                            logger.info(
+                            logger.debug(
                                 "Sent heartbeat #%d from %s at %s",
                                 heartbeat_count,
                                 current_process().name,

@@ -109,7 +109,7 @@ class HealthChecker:
                             "last_heartbeat": data["timestamp"],
                         },
                     )
-                    logger.info(
+                    logger.debug(
                         "Received heartbeat from %s at %s (broker_connected: %s)",
                         worker_name,
                         data["timestamp"],

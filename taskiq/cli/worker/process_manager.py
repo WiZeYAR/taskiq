@@ -195,6 +195,8 @@ class ProcessManager:
         self.workers: list[Process] = []
         self.health_checker: HealthChecker | None = None
         self.health_server: HealthHTTPServer | None = None
+        self._health_thread: threading.Thread | None = None
+        self._health_loop: asyncio.AbstractEventLoop | None = None
 
         # Only initialize health checker if health_port is specified
         if args.health_port is not None:
@@ -298,6 +300,7 @@ class ProcessManager:
         def run_health_loop() -> None:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+            self._health_loop = loop
             loop.run_until_complete(run_health_tasks())
 
         health_thread = threading.Thread(
@@ -305,8 +308,20 @@ class ProcessManager:
             daemon=True,
             name="health-monitor",
         )
+        self._health_thread = health_thread
         health_thread.start()
         return health_thread
+
+    def _stop_health_monitoring(self) -> None:
+        """Stop health monitoring thread and cleanup resources."""
+        if self.health_server and self._health_loop:
+            self._health_loop.call_soon_threadsafe(
+                self._health_loop.stop,
+            )
+        if self.health_checker:
+            self.health_checker.cleanup()
+        if self._health_thread is not None:
+            self._health_thread.join(timeout=5)
 
     def _handle_action(self, action: ProcessActionBase, restarts: int) -> int | None:
         """
@@ -343,10 +358,7 @@ class ProcessManager:
         if isinstance(action, ShutdownAction):
             logger.debug("Process manager closed, killing workers.")
             self._shutdown_workers()
-            if self.health_checker:
-                self.health_checker.cleanup()
-            if self.health_server:
-                asyncio.run(self.health_server.stop())
+            self._stop_health_monitoring()
             return None
         return restarts
 

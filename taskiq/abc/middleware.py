@@ -154,7 +154,7 @@ class TaskiqMiddleware:  # pragma: no cover
 
     def health(
         self,
-    ) -> None | Coroutine[Any, Any, MiddlewareHealthResult]:
+    ) -> None | MiddlewareHealthResult | Coroutine[Any, Any, MiddlewareHealthResult]:
         """
         Check middleware health status.
 

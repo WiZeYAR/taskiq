@@ -100,8 +100,8 @@ async def send_heartbeat(
     while True:
         try:
             # Check broker connection status
-            # Note: Different brokers may implement this differently
-            broker_connected = True  # Default to True if no check available
+            # Brokers can override is_connected() to provide real checks.
+            broker_connected = getattr(broker, "is_connected", lambda: True)()
 
             logger.debug(
                 "Preparing to send heartbeat #%d from %s",

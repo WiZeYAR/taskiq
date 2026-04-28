@@ -332,6 +332,8 @@ class ProcessManager:
             if action.worker_num in self._reloaded_workers:
                 return restarts
             action.handle(self.workers, self.args, self.worker_function)
+            if self.health_checker is not None:
+                self.health_checker.reset_worker(f"worker-{action.worker_num}")
             self._reloaded_workers.add(action.worker_num)
             return restarts
         if isinstance(action, ShutdownAction):

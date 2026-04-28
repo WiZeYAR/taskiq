@@ -136,7 +136,7 @@ class HealthChecker:
         self.startup_timeout = startup_timeout
         self.check_interval = check_interval
 
-        self.health_queue: HealthQueue
+        self.health_queue: HealthQueue | None = None
         self.last_heartbeat: dict[str, float | None] = {}
         self.worker_health: dict[str, WorkerHealthDetail] = {}
         self.middleware_health: dict[str, dict[str, MiddlewareHealthDetail]] = {}
@@ -167,6 +167,24 @@ class HealthChecker:
 
         logger.info("Created shared health queue")
         return self.health_queue
+
+    def reset_worker(self, worker_id: str) -> None:
+        """
+        Reset health state for a worker after respawn.
+
+        :param worker_id: Worker identifier (e.g. 'worker-0').
+        """
+        self.last_heartbeat[worker_id] = None
+        self.middleware_health.pop(worker_id, None)
+        if worker_id in self.worker_health:
+            self.worker_health[worker_id] = WorkerHealthDetail(
+                worker_id=worker_id,
+                status="unknown",
+                broker_connected=False,
+                last_heartbeat=None,
+                initialized_at=time.time(),
+            )
+            logger.info("Reset health state for %s", worker_id)
 
     def _process_heartbeat_data(self, data: HeartbeatData) -> None:
         """
@@ -256,12 +274,13 @@ class HealthChecker:
         logger.info("Health monitor started for %d workers", self.num_workers)
 
         while True:
-            while not self.health_queue.empty():
-                try:
-                    data = self.health_queue.get_nowait()
-                    self._process_heartbeat_data(data)
-                except Exception as e:
-                    logger.debug("Failed to process heartbeat: %s", e)
+            if self.health_queue is not None:
+                while True:
+                    try:
+                        data = self.health_queue.get_nowait()
+                        self._process_heartbeat_data(data)
+                    except Exception:
+                        break
 
             now = time.time()
             self._check_stuck_workers(now)
@@ -298,6 +317,6 @@ class HealthChecker:
 
     def cleanup(self) -> None:
         """Close health queue."""
-        if self.health_queue:
+        if self.health_queue is not None:
             self.health_queue.close()
             self.health_queue.join_thread()

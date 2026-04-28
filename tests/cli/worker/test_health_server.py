@@ -143,8 +143,26 @@ def test_get_health_status_degraded(
 
     asyncio.run(server.handle_request(reader, writer))
 
-    # Verify degraded status in response
+    # Verify degraded status returns 503
     written_data = writer.write.call_args[0][0].decode()
+    assert "HTTP/1.1 503 Service Unavailable" in written_data
     assert '"status": "degraded"' in written_data
     assert '"alive": 1' in written_data
     assert '"stuck": 1' in written_data
+
+
+@pytest.mark.asyncio
+async def test_health_server_malformed_request(
+    health_server: HealthHTTPServer,
+) -> None:
+    """Test that malformed requests return 400."""
+    reader = AsyncMock()
+    writer = AsyncMock()
+
+    reader.readline.return_value = b"INVALID\r\n"
+
+    await health_server.handle_request(reader, writer)
+
+    writer.write.assert_called_once()
+    written_data = writer.write.call_args[0][0].decode()
+    assert "HTTP/1.1 400 Bad Request" in written_data

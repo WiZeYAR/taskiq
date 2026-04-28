@@ -50,20 +50,45 @@ class HealthHTTPServer:
             if not request_line:
                 return
 
-            method, path, _ = request_line.decode().strip().split()
+            parts = request_line.decode().strip().split()
+            if len(parts) < 2:
+                response = (
+                    "HTTP/1.1 400 Bad Request\r\n"
+                    "Content-Length: 0\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(response.encode())
+                await writer.drain()
+                await writer.wait_closed()
+                return
+
+            method = parts[0]
+            path = parts[1]
 
             if method == "GET" and path == "/health":
                 status: HealthStatus = self.health_checker.get_health_status()
                 response_body = json.dumps(status)
+                http_status = (
+                    "200 OK"
+                    if status["status"] == "healthy"
+                    else "503 Service Unavailable"
+                )
                 response = (
-                    f"HTTP/1.1 200 OK\r\n"
+                    f"HTTP/1.1 {http_status}\r\n"
                     f"Content-Type: application/json\r\n"
                     f"Content-Length: {len(response_body)}\r\n"
+                    f"Connection: close\r\n"
                     f"\r\n"
                     f"{response_body}"
                 )
             else:
-                response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+                response = (
+                    "HTTP/1.1 404 Not Found\r\n"
+                    "Content-Length: 0\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
 
             writer.write(response.encode())
             await writer.drain()

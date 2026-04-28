@@ -57,6 +57,8 @@ class WorkerArgs:
     use_process_pool: bool = False
     health_port: int | None = None
     health_host: str = "0.0.0.0"  # noqa: S104
+    heartbeat_interval: float = 5.0
+    heartbeat_timeout: float = 15.0
 
     @classmethod
     def from_cli(
@@ -293,6 +295,20 @@ class WorkerArgs:
             dest="health_host",
             default="0.0.0.0",  # noqa: S104
             help="Host for HTTP health check server (default: 0.0.0.0).",
+        )
+        parser.add_argument(
+            "--heartbeat-interval",
+            type=float,
+            dest="heartbeat_interval",
+            default=5.0,
+            help="Seconds between worker heartbeats (default: 5.0).",
+        )
+        parser.add_argument(
+            "--heartbeat-timeout",
+            type=float,
+            dest="heartbeat_timeout",
+            default=15.0,
+            help="Seconds before a worker is considered stuck (default: 15.0).",
         )
 
         namespace = parser.parse_args(

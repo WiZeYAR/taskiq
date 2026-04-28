@@ -85,12 +85,14 @@ async def collect_middleware_health(
 async def send_heartbeat(
     health_pipe: Any,
     broker: AsyncBroker,
+    interval: float = 5.0,
 ) -> None:
     """
     Send periodic health heartbeats to main process.
 
     :param health_pipe: Queue for sending heartbeats.
     :param broker: Broker instance (may have connection checking).
+    :param interval: Seconds between heartbeats.
     """
     logger.debug(
         "Heartbeat sender started for %s",
@@ -144,7 +146,7 @@ async def send_heartbeat(
                 e,
                 exc_info=True,
             )
-        await asyncio.sleep(5)  # Send every 5 seconds
+        await asyncio.sleep(interval)
 
 
 async def run_with_heartbeat(
@@ -152,6 +154,7 @@ async def run_with_heartbeat(
     broker: AsyncBroker,
     receiver: Receiver,
     shutdown_event: asyncio.Event,
+    heartbeat_interval: float = 5.0,
 ) -> None:
     """
     Run receiver and heartbeat task concurrently.
@@ -160,9 +163,10 @@ async def run_with_heartbeat(
     :param broker: Broker instance.
     :param receiver: Receiver instance.
     :param shutdown_event: Shutdown event.
+    :param heartbeat_interval: Seconds between heartbeats.
     """
     heartbeat_task = asyncio.create_task(
-        send_heartbeat(health_pipe, broker),
+        send_heartbeat(health_pipe, broker, heartbeat_interval),
     )
     receiver_task = asyncio.create_task(receiver.listen(shutdown_event))
     _, pending = await asyncio.wait(
@@ -361,6 +365,7 @@ def start_listen(args: WorkerArgs, health_pipe: Any | None = None) -> None:
                     broker,
                     receiver,
                     shutdown_event,
+                    args.heartbeat_interval,
                 ),
             )
         else:

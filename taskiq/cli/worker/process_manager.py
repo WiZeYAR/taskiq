@@ -203,7 +203,11 @@ class ProcessManager:
                 args.health_host,
                 args.health_port,
             )
-            self.health_checker = HealthChecker(num_workers=args.workers)
+            self.health_checker = HealthChecker(
+                num_workers=args.workers,
+                heartbeat_interval=args.heartbeat_interval,
+                heartbeat_timeout=args.heartbeat_timeout,
+            )
             self.health_server = HealthHTTPServer(
                 health_checker=self.health_checker,
                 host=args.health_host,

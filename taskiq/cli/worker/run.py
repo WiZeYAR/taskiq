@@ -102,8 +102,14 @@ async def send_heartbeat(
     while True:
         try:
             # Check broker connection status
-            # Brokers can override is_connected() to provide real checks.
-            broker_connected = getattr(broker, "is_connected", lambda: True)()
+            # Brokers can override is_connected() (sync or async).
+            _check = getattr(broker, "is_connected", None)
+            if _check is not None:
+                broker_connected = _check()
+                if asyncio.iscoroutine(broker_connected):
+                    broker_connected = await broker_connected
+            else:
+                broker_connected = True
 
             logger.debug(
                 "Preparing to send heartbeat #%d from %s",

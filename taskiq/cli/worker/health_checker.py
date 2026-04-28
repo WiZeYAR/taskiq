@@ -7,6 +7,7 @@ Detects worker crashes, stuck processes, and broker disconnections.
 
 import asyncio
 import logging
+import queue
 import time
 from multiprocessing import Queue
 from typing import Any, Literal, NoReturn, Protocol, TypedDict, cast
@@ -278,9 +279,18 @@ class HealthChecker:
                 while True:
                     try:
                         data = self.health_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    except Exception:
+                        logger.exception("Failed to read from health queue")
+                        break
+                    try:
                         self._process_heartbeat_data(data)
                     except Exception:
-                        break
+                        logger.exception(
+                            "Failed to process heartbeat from %s",
+                            data.get("worker_id", "unknown"),
+                        )
 
             now = time.time()
             self._check_stuck_workers(now)

@@ -50,7 +50,19 @@ class HealthHTTPServer:
             if not request_line:
                 return
 
-            parts = request_line.decode().strip().split()
+            try:
+                parts = request_line.decode().strip().split()
+            except UnicodeDecodeError:
+                response = (
+                    "HTTP/1.1 400 Bad Request\r\n"
+                    "Content-Length: 0\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(response.encode())
+                await writer.drain()
+                await writer.wait_closed()
+                return
             if len(parts) < 2:
                 response = (
                     "HTTP/1.1 400 Bad Request\r\n"

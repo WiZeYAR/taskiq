@@ -1,11 +1,22 @@
 from collections.abc import Coroutine
 from types import CoroutineType
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any, NamedTuple, Union
 
 if TYPE_CHECKING:  # pragma: no cover  # pragma: no cover
     from taskiq.abc.broker import AsyncBroker
     from taskiq.message import TaskiqMessage
     from taskiq.result import TaskiqResult
+
+
+class MiddlewareHealthResult(NamedTuple):
+    """
+    Result from middleware health check.
+
+    Middleware health() method returns this tuple.
+    """
+
+    data: dict[str, Any]
+    is_healthy: bool
 
 
 class TaskiqMiddleware:  # pragma: no cover
@@ -140,3 +151,19 @@ class TaskiqMiddleware:  # pragma: no cover
         :param result: returned value.
         :param exception: found exception.
         """
+
+    def health(
+        self,
+    ) -> None | Coroutine[Any, Any, MiddlewareHealthResult]:
+        """
+        Check middleware health status.
+
+        Middleware can opt-in to health reporting by implementing this method.
+        Raise NotImplementedError to opt-out (default behavior).
+
+        Returns tuple of (custom_data, is_healthy).
+
+        :returns: MiddlewareHealthResult with custom health data and health status.
+        :raises NotImplementedError: If middleware opts out of health checks.
+        """
+        raise NotImplementedError

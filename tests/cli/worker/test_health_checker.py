@@ -12,6 +12,7 @@ import pytest
 from taskiq.cli.worker.health_checker import (
     HealthChecker,
     HeartbeatData,
+    MiddlewareHealthDetail,
 )
 
 
@@ -66,6 +67,7 @@ async def test_health_checker_monitor_receives_heartbeat(
             "worker_id": "worker-0",
             "timestamp": time.time(),
             "broker_connected": True,
+            "middleware_health": {},
         },
     )
 
@@ -92,6 +94,7 @@ async def test_health_checker_monitor_multiple_heartbeats(
             "worker_id": "worker-0",
             "timestamp": time.time(),
             "broker_connected": True,
+            "middleware_health": {},
         },
     )
     queue.put(
@@ -99,6 +102,7 @@ async def test_health_checker_monitor_multiple_heartbeats(
             "worker_id": "worker-1",
             "timestamp": time.time(),
             "broker_connected": False,
+            "middleware_health": {},
         },
     )
 
@@ -155,6 +159,7 @@ async def test_health_checker_multiple_stuck_workers(
             worker_id="worker-0",
             timestamp=time.time(),
             broker_connected=True,
+            middleware_health={},
         ),
     )
 
@@ -187,6 +192,7 @@ async def test_health_checker_worker_reconnects(
             "worker_id": "worker-0",
             "timestamp": time.time(),
             "broker_connected": True,
+            "middleware_health": {},
         },
     )
     # Wait for monitor to process heartbeat (check_interval is 0.1s)
@@ -364,3 +370,108 @@ async def test_health_checker_empty_heartbeat_data(
         False,
     )
     assert broker_connected is False
+
+
+async def test_middleware_health_collected(
+    health_checker: HealthChecker,
+) -> None:
+    """Test that middleware health is collected and stored."""
+    queue = health_checker.create_queue()
+
+    middleware_health: dict[str, MiddlewareHealthDetail] = {
+        "TestMiddleware": MiddlewareHealthDetail(
+            middleware_name="TestMiddleware",
+            is_healthy=True,
+            data={"status": "ok"},
+        ),
+    }
+
+    queue.put(
+        HeartbeatData(
+            worker_id="worker-0",
+            timestamp=time.time(),
+            broker_connected=True,
+            middleware_health=middleware_health,
+        ),
+    )
+
+    # Run monitor - sleep longer than check_interval (0.1s)
+    monitor_task = asyncio.create_task(health_checker.monitor())
+    await asyncio.sleep(0.15)
+    monitor_task.cancel()
+
+    # Check middleware health is stored
+    assert "worker-0" in health_checker.middleware_health
+    assert (
+        health_checker.middleware_health["worker-0"]["TestMiddleware"]["is_healthy"]
+        is True
+    )
+
+
+async def test_middleware_unhealthy_marks_worker_stuck(
+    health_checker: HealthChecker,
+) -> None:
+    """Test that unhealthy middleware marks worker as stuck."""
+    queue = health_checker.create_queue()
+
+    middleware_health: dict[str, MiddlewareHealthDetail] = {
+        "FailingMiddleware": MiddlewareHealthDetail(
+            middleware_name="FailingMiddleware",
+            is_healthy=False,
+            data={"error": "connection lost"},
+        ),
+    }
+
+    queue.put(
+        HeartbeatData(
+            worker_id="worker-0",
+            timestamp=time.time(),
+            broker_connected=True,
+            middleware_health=middleware_health,
+        ),
+    )
+
+    # Run monitor - sleep longer than check_interval (0.1s)
+    monitor_task = asyncio.create_task(health_checker.monitor())
+    await asyncio.sleep(0.15)
+    monitor_task.cancel()
+
+    # Check worker is marked as stuck due to unhealthy middleware
+    assert health_checker.worker_health["worker-0"]["status"] == "stuck"
+
+
+async def test_middleware_health_included_in_status(
+    health_checker: HealthChecker,
+) -> None:
+    """Test that middleware health is included in health status."""
+    queue = health_checker.create_queue()
+
+    middleware_health: dict[str, MiddlewareHealthDetail] = {
+        "TestMiddleware": MiddlewareHealthDetail(
+            middleware_name="TestMiddleware",
+            is_healthy=True,
+            data={"latency_ms": 12.5},
+        ),
+    }
+
+    queue.put(
+        HeartbeatData(
+            worker_id="worker-0",
+            timestamp=time.time(),
+            broker_connected=True,
+            middleware_health=middleware_health,
+        ),
+    )
+
+    # Run monitor - sleep longer than check_interval (0.1s)
+    monitor_task = asyncio.create_task(health_checker.monitor())
+    await asyncio.sleep(0.15)
+    monitor_task.cancel()
+
+    # Check middleware health in status
+    status = health_checker.get_health_status()
+    assert "middleware_health" in status
+    assert "worker-0" in status["middleware_health"]
+    assert (
+        status["middleware_health"]["worker-0"]["TestMiddleware"]["is_healthy"] is True
+    )

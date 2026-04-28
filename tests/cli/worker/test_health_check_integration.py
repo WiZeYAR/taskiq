@@ -11,7 +11,10 @@ import time
 from multiprocessing import Process, Queue, current_process
 from typing import Any
 
-from taskiq.cli.worker.health_checker import HealthChecker
+from taskiq.cli.worker.health_checker import (
+    HealthChecker,
+    MiddlewareHealthDetail,
+)
 
 
 def worker_target(
@@ -33,11 +36,19 @@ def worker_target(
             count = 0
             while True:
                 try:
+                    middleware_health: dict[str, MiddlewareHealthDetail] = {
+                        "SimulatedMiddleware": MiddlewareHealthDetail(
+                            middleware_name="SimulatedMiddleware",
+                            is_healthy=True,
+                            data={"status": "ok"},
+                        ),
+                    }
                     health_queue.put(
                         {
                             "worker_id": proc_name,
                             "timestamp": time.time(),
                             "broker_connected": True,
+                            "middleware_health": middleware_health,
                         },
                     )
                     count += 1

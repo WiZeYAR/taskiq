@@ -9,9 +9,21 @@ import asyncio
 import logging
 import time
 from multiprocessing import Queue
-from typing import Literal, NoReturn, Protocol, TypedDict, cast
+from typing import Any, Literal, NoReturn, Protocol, TypedDict, cast
 
 logger = logging.getLogger("taskiq.health-checker")
+
+
+class MiddlewareHealthDetail(TypedDict):
+    """
+    Health status for a single middleware.
+
+    Collected from middleware.health() method for each worker.
+    """
+
+    middleware_name: str
+    is_healthy: bool
+    data: dict[str, Any]
 
 
 class HeartbeatData(TypedDict):
@@ -24,6 +36,7 @@ class HeartbeatData(TypedDict):
     worker_id: str
     timestamp: float
     broker_connected: bool
+    middleware_health: dict[str, MiddlewareHealthDetail]
 
 
 class WorkerHealthDetail(TypedDict):
@@ -60,6 +73,7 @@ class HealthStatus(TypedDict):
     workers: WorkerCounts
     broker_connected: bool
     workers_detail: list[WorkerHealthDetail]
+    middleware_health: dict[str, dict[str, MiddlewareHealthDetail]]
 
 
 class HealthQueue(Protocol):
@@ -99,6 +113,7 @@ class HealthChecker:
     - Worker crashes (handled by ProcessManager.is_alive())
     - Worker stuck (via heartbeat timeout)
     - Broker disconnected (via heartbeat data)
+    - Middleware unhealthy (via middleware health checks)
 
     :param num_workers: Number of worker subprocesses.
     :param heartbeat_interval: Seconds between heartbeats from workers.
@@ -124,6 +139,7 @@ class HealthChecker:
         self.health_queue: HealthQueue
         self.last_heartbeat: dict[str, float | None] = {}
         self.worker_health: dict[str, WorkerHealthDetail] = {}
+        self.middleware_health: dict[str, dict[str, MiddlewareHealthDetail]] = {}
 
     def create_queue(self) -> HealthQueue:
         """
@@ -166,6 +182,11 @@ class HealthChecker:
             False,
         )
         self.worker_health[worker_name]["last_heartbeat"] = data["timestamp"]
+
+        middleware_health = data.get("middleware_health", {})
+        if middleware_health:
+            self._update_worker_middleware_health(worker_name, middleware_health)
+
         logger.debug(
             "Received heartbeat from %s at %s (broker_connected: %s)",
             worker_name,
@@ -201,6 +222,30 @@ class HealthChecker:
                         f"{worker_name} failed to send initial heartbeat",
                     )
                     self.worker_health[worker_name]["status"] = "stuck"
+
+    def _update_worker_middleware_health(
+        self,
+        worker_id: str,
+        middleware_health: dict[str, MiddlewareHealthDetail],
+    ) -> None:
+        """
+        Update middleware health data for a worker.
+
+        If any middleware is unhealthy, mark the worker as stuck.
+
+        :param worker_id: Worker identifier.
+        :param middleware_health: Middleware health data from worker.
+        """
+        self.middleware_health[worker_id] = middleware_health
+
+        any_unhealthy = any(not m["is_healthy"] for m in middleware_health.values())
+
+        if any_unhealthy:
+            self.worker_health[worker_id]["status"] = "stuck"
+            logger.warning(
+                "%s is stuck due to middleware health failure",
+                worker_id,
+            )
 
     async def monitor(self) -> NoReturn:
         """
@@ -248,6 +293,7 @@ class HealthChecker:
             ),
             broker_connected=broker_connected,
             workers_detail=list(self.worker_health.values()),
+            middleware_health=self.middleware_health,
         )
 
     def cleanup(self) -> None:

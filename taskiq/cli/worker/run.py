@@ -13,6 +13,7 @@ from typing import Any
 from taskiq.abc.broker import AsyncBroker
 from taskiq.cli.utils import import_object, import_tasks
 from taskiq.cli.worker.args import WorkerArgs
+from taskiq.cli.worker.health_checker import MiddlewareHealthDetail
 from taskiq.cli.worker.process_manager import ProcessManager
 from taskiq.receiver import Receiver
 
@@ -29,6 +30,56 @@ except ImportError:
 
 
 logger = logging.getLogger("taskiq.worker")
+
+
+async def collect_middleware_health(
+    broker: AsyncBroker,
+) -> dict[str, MiddlewareHealthDetail]:
+    """
+    Query all middleware for health status.
+
+    Middleware that raise NotImplementedError opt-out (default behavior).
+    Middleware that raise exceptions are marked as unhealthy.
+
+    :param broker: Broker instance with middlewares.
+    :returns: Dictionary of middleware health results.
+    """
+    middleware_health: dict[str, MiddlewareHealthDetail] = {}
+
+    for middleware in broker.middlewares:
+        middleware_name = middleware.__class__.__name__
+        try:
+            health_result = middleware.health()
+            if health_result is None:
+                continue
+            result = (
+                await health_result
+                if asyncio.iscoroutine(health_result)
+                else health_result
+            )
+            if result is None:
+                continue
+            middleware_health[middleware_name] = MiddlewareHealthDetail(
+                middleware_name=middleware_name,
+                is_healthy=result.is_healthy,
+                data=result.data,
+            )
+        except NotImplementedError:
+            continue
+        except Exception as e:
+            logger.error(
+                "Middleware %s health check failed: %s",
+                middleware_name,
+                e,
+                exc_info=True,
+            )
+            middleware_health[middleware_name] = MiddlewareHealthDetail(
+                middleware_name=middleware_name,
+                is_healthy=False,
+                data={"error": str(e)},
+            )
+
+    return middleware_health
 
 
 async def send_heartbeat(
@@ -58,12 +109,15 @@ async def send_heartbeat(
                 current_process().name,
             )
 
+            middleware_health = await collect_middleware_health(broker)
+
             # Queue.put() is synchronous, no await needed
             health_pipe.put(
                 {
                     "worker_id": current_process().name,
                     "timestamp": time.time(),
                     "broker_connected": broker_connected,
+                    "middleware_health": middleware_health,
                 },
             )
 

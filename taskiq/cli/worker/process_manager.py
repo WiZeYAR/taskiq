@@ -66,6 +66,7 @@ class ReloadOneAction(ProcessActionBase):
         workers: list[Process],
         args: WorkerArgs,
         worker_func: Callable[[WorkerArgs], None],
+        health_pipe: Any | None = None,
     ) -> None:
         """
         This action reloads a single process.
@@ -73,6 +74,7 @@ class ReloadOneAction(ProcessActionBase):
         :param workers: known children processes.
         :param args: args for new process.
         :param worker_func: function that is used to start worker processes.
+        :param health_pipe: Optional health queue for heartbeat monitoring.
         """
         if self.worker_num < 0 or self.worker_num >= len(workers):
             logger.warning("Unknown worker id.")
@@ -85,9 +87,12 @@ class ReloadOneAction(ProcessActionBase):
         # Waiting worker shutdown.
         worker.join()
         event: EventType = Event()
+        kwargs: dict[str, Any] = {"args": args}
+        if health_pipe is not None:
+            kwargs["health_pipe"] = health_pipe
         new_process = Process(
             target=worker_func,
-            kwargs={"args": args},
+            kwargs=kwargs,
             name=f"worker-{self.worker_num}",
             daemon=False,
         )
@@ -193,6 +198,7 @@ class ProcessManager:
             )
 
         self.workers: list[Process] = []
+        self._reloaded_workers: set[int] = set()
         self.health_checker: HealthChecker | None = None
         self.health_server: HealthHTTPServer | None = None
         self._health_thread: threading.Thread | None = None
@@ -314,14 +320,23 @@ class ProcessManager:
 
     def _stop_health_monitoring(self) -> None:
         """Stop health monitoring thread and cleanup resources."""
-        if self.health_server and self._health_loop:
+        if (
+            self.health_server
+            and self._health_loop
+            and not self._health_loop.is_closed()
+        ):
+            self._health_loop.call_soon_threadsafe(
+                self._health_loop.create_task,
+                self.health_server.stop(),
+            )
+        if self._health_thread is not None:
+            self._health_thread.join(timeout=5)
+        if self.health_checker:
+            self.health_checker.cleanup()
+        if self._health_loop and not self._health_loop.is_closed():
             self._health_loop.call_soon_threadsafe(
                 self._health_loop.stop,
             )
-        if self.health_checker:
-            self.health_checker.cleanup()
-        if self._health_thread is not None:
-            self._health_thread.join(timeout=5)
 
     def _handle_action(self, action: ProcessActionBase, restarts: int) -> int | None:
         """
@@ -350,7 +365,17 @@ class ProcessManager:
             # If we just reloaded this worker, skip handling.
             if action.worker_num in self._reloaded_workers:
                 return restarts
-            action.handle(self.workers, self.args, self.worker_function)
+            health_queue = (
+                self.health_checker.health_queue
+                if self.health_checker is not None
+                else None
+            )
+            action.handle(
+                self.workers,
+                self.args,
+                self.worker_function,
+                health_pipe=health_queue,
+            )
             if self.health_checker is not None:
                 self.health_checker.reset_worker(f"worker-{action.worker_num}")
             self._reloaded_workers.add(action.worker_num)
@@ -403,7 +428,7 @@ class ProcessManager:
         :returns: status code or None.
         """
         restarts = 0
-        self._reloaded_workers: set[int] = set()
+        self._reloaded_workers = set()
         self.prepare_workers()
 
         # Start health monitoring and HTTP server in background
